@@ -1,4 +1,4 @@
-# Android 构建说明
+# 知行 Android 构建说明
 
 当前仓库已经有 Android 工程骨架，但还没有提交 Gradle Wrapper。请在安装 Android Studio / Android SDK 后使用 TRAE 或 Android Studio 打开仓库根目录，让 IDE 生成或同步 Gradle Wrapper。
 
