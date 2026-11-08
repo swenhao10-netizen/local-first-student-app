@@ -9,7 +9,7 @@ jobs:
   build:
     runs-on: ubuntu-latest
     permissions:
-      contents: read
+      contents: write
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -33,4 +33,21 @@ jobs:
         with:
           name: zhixing-debug-apk
           path: app/build/outputs/apk/debug/app-debug.apk
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v0.1.0
+          name: 知行 v0.1.0
+          body: |
+            知行 Android 首个内部测试版本。
+
+            当前包含：
+            - 背单词 / 学习卡片本地记录
+            - 习惯·专注本地记录
+            - 轻量记账本地记录
+            - JSON 导入与导出备份
+
+            当前限制：复习排期、完整冲突处理、提醒和高保真界面仍在开发中。
+          files: app/build/outputs/apk/debug/app-debug.apk
+          prerelease: true
 
