@@ -7,7 +7,9 @@ plugins {
 android { namespace = "com.swenhao10.localfirst"; compileSdk = 35
     defaultConfig { applicationId = "com.swenhao10.localfirst"; minSdk = 26; targetSdk = 35; versionCode = 1; versionName = "0.1.0" }
     buildFeatures { compose = true }
+    compileOptions { sourceCompatibility = JavaVersion.VERSION_17; targetCompatibility = JavaVersion.VERSION_17 }
 }
+kotlin { jvmToolchain(17) }
 dependencies {
     val bom = platform("androidx.compose:compose-bom:2024.12.01")
     implementation(bom); androidTestImplementation(bom)
