@@ -9,12 +9,19 @@
 - Kotlin + Jetpack Compose + Room
 - 无账号，本地 SQLite 数据库
 - 三个模块的最小记录闭环
-- “我的数据”入口已预留导入、导出、备份、恢复和隐私说明
+- Material 3 视觉系统：青绿色主色、卡片分组、底部导航和轻量动效
+- “我的数据”支持 JSON 导入、导出和备份提示
+- 写入操作放在后台线程，避免点击保存时卡顿
+- 自定义“知行”书本 + 向上箭头 App 图标
 - 内置词库内容只使用原创示例；考试词库需要单独核验授权
 
 ## 开发状态
 
-当前是 Android 工程骨架和最小闭环，导入、导出、备份、恢复、复习排期和高保真设计仍需继续实现。请阅读 `项目总览与决策清单.md` 与 `词库内容方案-首版任务.md`。
+当前是 Android 内部测试版。复习排期、考试词库授权、完整冲突处理、提醒和正式签名发布仍需继续实现。请阅读 `项目总览与决策清单.md` 与 `词库内容方案-首版任务.md`。
+
+## UI 参考
+
+视觉和交互采用 Jetpack Compose Material 3 的成熟模式，参考了 Android 官方的 [Now in Android](https://github.com/android/nowinandroid) 与 [Compose Samples](https://github.com/android/compose-samples)，并按“知行”的本地优先定位重新组合。
 
 ## GitHub
 
