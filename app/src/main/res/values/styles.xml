@@ -1,2 +1,10 @@
-<resources><style name="Theme.LocalFirst" parent="android:style/Theme.Material.Light.NoActionBar"><item name="android:fontFamily">sans</item><item name="android:colorAccent">#222222</item></style></resources>
+<resources>
+    <style name="Theme.LocalFirst" parent="android:style/Theme.Material.Light.NoActionBar">
+        <item name="android:fontFamily">sans</item>
+        <item name="android:windowLightStatusBar">true</item>
+        <item name="android:statusBarColor">@color/zhixing_cream</item>
+        <item name="android:navigationBarColor">@color/zhixing_cream</item>
+        <item name="android:colorAccent">@color/zhixing_teal</item>
+    </style>
+</resources>
 
