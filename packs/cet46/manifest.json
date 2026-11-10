@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "pack_id": "org.zhixing.cet46",
+  "name": "大学英语四六级词汇（ECDICT）",
+  "language": "en",
+  "level": "CET-4 / CET-6",
+  "entry_count": 5805,
+  "version": "2026.11.10",
+  "released_at": "2026-11-10",
+  "license": {
+    "spdx": "MIT",
+    "url": "https://github.com/skywind3000/ECDICT/blob/master/LICENSE",
+    "text_ref": "LICENSE.txt"
+  },
+  "source": {
+    "origin": "ECDICT",
+    "author": "skywind3000",
+    "contact": "https://github.com/skywind3000/ECDICT",
+    "retrieved_at": "2026-11-10",
+    "source_file": "ecdict.csv (66,009,548 bytes)"
+  },
+  "checksum": {
+    "sha256_db": "5660ab0895f599cf2fd6720e5e716dd66fceb899c6cd1b7a99af78d7656a7f05",
+    "sha256_media": null
+  }
+}
