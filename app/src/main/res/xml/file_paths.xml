@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<paths>
+    <!-- 拍照的临时文件放 cache -->
+    <cache-path name="photos" path="photos/" />
+    <!-- 发记录时保存的图片放内部存储 -->
+    <files-path name="records" path="records/" />
+</paths>

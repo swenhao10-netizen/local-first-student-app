@@ -1,0 +1,14 @@
+# Android / Gradle
+local.properties
+.gradle/
+build/
+app/build/
+*.iml
+.idea/
+# Room schema export (generated at build time)
+app/schemas/
+# Keystore / signing
+*.jks
+*.keystore
+# OS
+.DS_Store
