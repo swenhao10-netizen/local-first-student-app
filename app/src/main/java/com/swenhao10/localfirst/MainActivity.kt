@@ -99,6 +99,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -140,6 +141,7 @@ import com.swenhao10.localfirst.data.ThemeMode
 import com.swenhao10.localfirst.data.UnknownWord
 import com.swenhao10.localfirst.data.UnknownWordDao
 import com.swenhao10.localfirst.data.VocabularyCard
+import com.swenhao10.localfirst.data.images
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -438,7 +440,7 @@ private fun LocalFirstApp(db: AppDatabase) {
                             scope.launch {
                                 withContext(Dispatchers.IO) {
                                     recordsDao.delete(record.id)
-                                    record.imagePath?.let { File(it).delete() }
+                                    record.images().forEach { p -> runCatching { File(p).delete() } }
                                 }
                                 message = "这条已经删了"
                             }
@@ -465,7 +467,7 @@ private fun LocalFirstApp(db: AppDatabase) {
                             scope.launch {
                                 withContext(Dispatchers.IO) {
                                     recordsDao.delete(record.id)
-                                    record.imagePath?.let { File(it).delete() }
+                                    record.images().forEach { p -> runCatching { File(p).delete() } }
                                 }
                             }
                         }
@@ -505,16 +507,23 @@ private fun LocalFirstApp(db: AppDatabase) {
                     showAddRecord = false
                     editingRecord = null
                 },
-                onPublish = { text, imageUri, amountCents, category, moneyKind ->
+                onPublish = { text, newUris, keptPaths, amountCents, category, moneyKind ->
                     scope.launch {
-                        val newImagePath = imageUri?.let { copyUriToInternal(context, it, "img_${System.currentTimeMillis()}.jpg") }
+                        val addedPaths = newUris.mapIndexedNotNull { i, uri ->
+                            copyUriToInternal(context, uri, "img_${System.currentTimeMillis()}_$i.jpg")
+                        }
+                        val finalPaths = (keptPaths + addedPaths).take(9)
+                        // 编辑时被删掉的旧图，连文件一起清掉
+                        val droppedPaths = editing?.images()?.filter { it !in keptPaths } ?: emptyList()
                         withContext(Dispatchers.IO) {
+                            droppedPaths.forEach { p -> runCatching { File(p).delete() } }
                             if (editing == null) {
                                 recordsDao.insert(
                                     RecordEntry(
                                         kind = if (amountCents != null) "expense" else "daily",
                                         text = text,
-                                        imagePath = newImagePath,
+                                        imagePath = finalPaths.firstOrNull(),
+                                        imagePaths = finalPaths.takeIf { it.size > 1 }?.joinToString("|"),
                                         amountCents = amountCents ?: 0L,
                                         category = category,
                                         moneyKind = moneyKind
@@ -525,7 +534,8 @@ private fun LocalFirstApp(db: AppDatabase) {
                                     editing.copy(
                                         kind = if (amountCents != null) "expense" else "daily",
                                         text = text,
-                                        imagePath = newImagePath ?: editing.imagePath,
+                                        imagePath = finalPaths.firstOrNull(),
+                                        imagePaths = finalPaths.takeIf { it.size > 1 }?.joinToString("|"),
                                         amountCents = amountCents ?: 0L,
                                         category = category,
                                         moneyKind = moneyKind
@@ -737,14 +747,88 @@ private fun DayHeader(time: Long) {
     }
 }
 
+/** 发记录页里的缩略图格子：右上角 × 去掉这张。 */
+@Composable
+private fun ThumbCell(bitmap: androidx.compose.ui.graphics.ImageBitmap, onRemove: () -> Unit) {
+    Box(Modifier.size(84.dp)) {
+        Image(
+            bitmap = bitmap,
+            contentDescription = "已选图片",
+            contentScale = ContentScale.Crop,
+            modifier = Modifier.fillMaxSize().clip(RoundedCornerShape(12.dp))
+        )
+        Box(
+            modifier = Modifier
+                .align(Alignment.TopEnd)
+                .padding(4.dp)
+                .size(20.dp)
+                .background(MaterialTheme.colorScheme.surface, CircleShape)
+                .clip(CircleShape)
+                .clickable(onClick = onRemove),
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(Icons.Default.Close, contentDescription = "去掉这张图", modifier = Modifier.size(14.dp), tint = MaterialTheme.colorScheme.onSurface)
+        }
+    }
+}
+
+/**
+ * 时间轴上的图片：一张铺满大图，多张每行三张方图，全部圆角。
+ */
+@Composable
+private fun RecordImages(paths: List<String>, modifier: Modifier = Modifier) {
+    if (paths.isEmpty()) return
+    if (paths.size == 1) {
+        val bitmap = rememberBitmap(paths.first())
+        if (bitmap != null) {
+            Image(
+                bitmap = bitmap,
+                contentDescription = "记录图片",
+                contentScale = ContentScale.Crop,
+                modifier = modifier
+                    .fillMaxWidth(0.7f)
+                    .aspectRatio(3f / 2f)
+                    .clip(RoundedCornerShape(16.dp))
+                    .background(MaterialTheme.colorScheme.surfaceVariant)
+            )
+        }
+        return
+    }
+    Column(modifier = modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        paths.chunked(3).forEach { row ->
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                row.forEach { path ->
+                    val bitmap = rememberBitmap(path)
+                    Box(
+                        modifier = Modifier
+                            .weight(1f)
+                            .aspectRatio(1f)
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(MaterialTheme.colorScheme.surfaceVariant)
+                    ) {
+                        if (bitmap != null) {
+                            Image(
+                                bitmap = bitmap,
+                                contentDescription = "记录图片",
+                                contentScale = ContentScale.Crop,
+                                modifier = Modifier.fillMaxSize()
+                            )
+                        }
+                    }
+                }
+                repeat(3 - row.size) { Spacer(Modifier.weight(1f)) }
+            }
+        }
+    }
+}
+
 /** 一条记录：左时间 + 竖线圆点 + 右侧内容（不套卡片，记账除外）。 */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun TimelineRecord(record: RecordEntry, onClick: () -> Unit, onLongPress: () -> Unit) {
-    val hasImage = record.imagePath != null
+    val images = record.images()
     val dotColor = recordDotColor(record)
     val lineColor = MaterialTheme.colorScheme.outlineVariant
-    val bitmap = if (hasImage) rememberBitmap(record.imagePath) else null
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -785,18 +869,7 @@ private fun TimelineRecord(record: RecordEntry, onClick: () -> Unit, onLongPress
                     if (record.text.isNotBlank()) {
                         Text(record.text, style = MaterialTheme.typography.bodyLarge, lineHeight = MaterialTheme.typography.bodyLarge.fontSize * 1.45f)
                     }
-                    if (bitmap != null) {
-                        Image(
-                            bitmap = bitmap,
-                            contentDescription = "记录图片",
-                            contentScale = ContentScale.Crop,
-                            modifier = Modifier
-                                .fillMaxWidth(0.7f)
-                                .aspectRatio(3f / 2f)
-                                .clip(RoundedCornerShape(16.dp))
-                                .background(MaterialTheme.colorScheme.surfaceVariant)
-                        )
-                    }
+                    RecordImages(images)
                 }
             }
         }
@@ -869,7 +942,7 @@ private fun EmptyRecordState(onAddRecord: () -> Unit) {
 private fun recordDotColor(record: RecordEntry): Color = when {
     record.kind == "expense" -> MaterialTheme.colorScheme.secondary
     record.kind == "study" -> MaterialTheme.colorScheme.tertiary
-    record.imagePath != null -> MaterialTheme.colorScheme.primary.copy(alpha = 0.5f)
+    record.images().isNotEmpty() -> MaterialTheme.colorScheme.primary.copy(alpha = 0.5f)
     else -> MaterialTheme.colorScheme.primary
 }
 
@@ -877,7 +950,6 @@ private fun recordDotColor(record: RecordEntry): Color = when {
 /** 一条记录：文字 / 图片 / 金额（记账）按有无显示。 */
 @Composable
 private fun RecordItemCard(record: RecordEntry, onDelete: () -> Unit, showDate: Boolean = false) {
-    val bitmap = rememberBitmap(record.imagePath)
     Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface), shape = RoundedCornerShape(18.dp)) {
         Column(Modifier.fillMaxWidth().padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -900,14 +972,7 @@ private fun RecordItemCard(record: RecordEntry, onDelete: () -> Unit, showDate: 
                 }
             }
             if (record.text.isNotBlank()) Text(record.text)
-            if (bitmap != null) {
-                Image(
-                    bitmap = bitmap,
-                    contentDescription = "记录图片",
-                    contentScale = ContentScale.Crop,
-                    modifier = Modifier.fillMaxWidth().height(200.dp).background(MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(12.dp))
-                )
-            }
+            RecordImages(record.images())
             if (record.amountCents != null) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Icon(Icons.Default.AccountBalanceWallet, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(18.dp))
@@ -926,16 +991,18 @@ private fun RecordItemCard(record: RecordEntry, onDelete: () -> Unit, showDate: 
     }
 }
 
-/** 发记录：全屏页，三张白卡（文字+图片 / 记账 / 单词提示），底部相册与拍照。 */
+/** 发记录：全屏页，三张白卡（文字+多图 / 记账 / 单词提示），底部相册与拍照。 */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun AddRecordScreen(
     editing: RecordEntry? = null,
     onCancel: () -> Unit,
-    onPublish: (text: String, imageUri: Uri?, amountCents: Long?, category: String?, moneyKind: String?) -> Unit
+    onPublish: (text: String, newUris: List<Uri>, keptPaths: List<String>, amountCents: Long?, category: String?, moneyKind: String?) -> Unit
 ) {
     var text by remember { mutableStateOf(editing?.text ?: "") }
-    var imageUri by remember { mutableStateOf<Uri?>(null) }
+    // 新的图（相册/拍照选的）和编辑时留下的旧图分开存，发布时再合并
+    val newUris = remember { mutableStateListOf<Uri>() }
+    val keptPaths = remember { mutableStateListOf<String>().apply { addAll(editing?.images() ?: emptyList()) } }
     var pendingPhotoUri by remember { mutableStateOf<Uri?>(null) }
     var recordMoney by remember { mutableStateOf(editing?.amountCents?.let { it > 0 } ?: false) }
     var amount by remember {
@@ -953,11 +1020,18 @@ private fun AddRecordScreen(
     var nowText by remember { mutableStateOf(timeText(System.currentTimeMillis())) }
     val context = LocalContext.current
     val categories = if (moneyKind == "income") INCOME_CATEGORIES else EXPENSE_CATEGORIES
-    val galleryLauncher = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
-        if (uri != null) imageUri = uri
+    val totalImages = newUris.size + keptPaths.size
+    val galleryLauncher = rememberLauncherForActivityResult(ActivityResultContracts.GetMultipleContents()) { uris ->
+        val room = (9 - newUris.size - keptPaths.size).coerceAtLeast(0)
+        if (uris.isNotEmpty() && room > 0) {
+            uris.map { it.toString() }.distinct().forEach { s ->
+                if (newUris.size < room && newUris.none { it.toString() == s }) newUris.add(Uri.parse(s))
+            }
+        }
     }
     val cameraLauncher = rememberLauncherForActivityResult(ActivityResultContracts.TakePicture()) { ok ->
-        if (ok) imageUri = pendingPhotoUri
+        val uri = pendingPhotoUri
+        if (ok && uri != null && newUris.size + keptPaths.size < 9) newUris.add(uri)
     }
     val permissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
         if (granted) {
@@ -968,8 +1042,7 @@ private fun AddRecordScreen(
         }
     }
     val amountCents = amount.toDoubleOrNull()?.let { (it * 100).toLong() }?.takeIf { it > 0 }
-    val canPublish = text.isNotBlank() || imageUri != null || (recordMoney && amountCents != null)
-    val thumb = rememberUriBitmap(imageUri)
+    val canPublish = text.isNotBlank() || totalImages > 0 || (recordMoney && amountCents != null)
 
     LaunchedEffect(Unit) {
         while (true) {
@@ -994,7 +1067,7 @@ private fun AddRecordScreen(
                 Button(
                     onClick = {
                         onPublish(
-                            text.trim(), imageUri,
+                            text.trim(), newUris.toList(), keptPaths.toList(),
                             if (recordMoney) amountCents else null,
                             if (recordMoney) category else null,
                             if (recordMoney) moneyKind else null
@@ -1039,41 +1112,21 @@ private fun AddRecordScreen(
                             modifier = Modifier.align(Alignment.End)
                         )
                         Spacer(Modifier.height(10.dp))
-                        Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
-                            if (imageUri != null && thumb != null) {
-                                Box {
-                                    Image(
-                                        bitmap = thumb,
-                                        contentDescription = "已选图片",
-                                        contentScale = ContentScale.Crop,
-                                        modifier = Modifier.size(84.dp).clip(RoundedCornerShape(12.dp))
-                                    )
-                                    Box(
-                                        modifier = Modifier
-                                            .align(Alignment.TopEnd)
-                                            .padding(4.dp)
-                                            .size(20.dp)
-                                            .background(MaterialTheme.colorScheme.surface, CircleShape)
-                                            .clip(CircleShape)
-                                            .clickable { imageUri = null },
-                                        contentAlignment = Alignment.Center
-                                    ) {
-                                        Icon(Icons.Default.Close, contentDescription = "去掉这张图", modifier = Modifier.size(14.dp), tint = MaterialTheme.colorScheme.onSurface)
-                                    }
+                        FlowRow(
+                            horizontalArrangement = Arrangement.spacedBy(10.dp),
+                            verticalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            keptPaths.forEach { path ->
+                                rememberBitmap(path, 512)?.let { old ->
+                                    ThumbCell(bitmap = old, onRemove = { keptPaths.remove(path) })
                                 }
                             }
-                            if (imageUri == null && !editing?.imagePath.isNullOrBlank()) {
-                                // 编辑旧记录时，原来的图先留着（一图一记录，换图先删了重发）
-                                rememberBitmap(editing?.imagePath, 512)?.let { old ->
-                                    Image(
-                                        bitmap = old,
-                                        contentDescription = "原来的图片",
-                                        contentScale = ContentScale.Crop,
-                                        modifier = Modifier.size(84.dp).clip(RoundedCornerShape(12.dp))
-                                    )
+                            newUris.forEach { uri ->
+                                rememberUriBitmap(uri)?.let { bmp ->
+                                    ThumbCell(bitmap = bmp, onRemove = { newUris.remove(uri) })
                                 }
                             }
-                            if (imageUri == null) {
+                            if (totalImages < 9) {
                                 val dashColor = MaterialTheme.colorScheme.outline
                                 Box(
                                     modifier = Modifier
@@ -1313,11 +1366,10 @@ private fun WordsScreen(
 
     fun finishSession() {
         val reviewed = study.known + study.unknown
-        val knownCount = study.known
         if (reviewed > 0) {
             scope.launch {
                 withContext(Dispatchers.IO) {
-                    recordsDao.insert(RecordEntry(kind = "study", text = "背了 $reviewed 个词 · 认识 $knownCount"))
+                    recordsDao.insert(RecordEntry(kind = "study", text = "背了 $reviewed 个词"))
                 }
             }
             onMessage("已记到记录里")
@@ -1370,12 +1422,6 @@ private fun WordsScreen(
                 trackColor = MaterialTheme.colorScheme.surfaceVariant,
                 drawStopIndicator = {}
             )
-            Spacer(Modifier.height(10.dp))
-            Row(Modifier.fillMaxWidth()) {
-                Text("认识 ${study.known}", color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
-                Spacer(Modifier.weight(1f))
-                Text("不认识 ${study.unknown}", color = warnColor, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
-            }
             Spacer(Modifier.height(16.dp))
             // 词卡：标签 / 单词 / 音标 / 分隔线 / 释义 / 来源
             Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface), shape = RoundedCornerShape(28.dp), modifier = Modifier.fillMaxWidth()) {

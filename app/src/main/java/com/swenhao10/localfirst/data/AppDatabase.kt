@@ -9,10 +9,11 @@ import kotlinx.coroutines.flow.Flow
 @Entity(tableName = "expenses") data class ExpenseEntry(@PrimaryKey(autoGenerate = true) val id: Long = 0, val title: String, val amountCents: Long, val spentOn: String)
 
 /**
- * v2 统一记录：日常 / 记账 / 单词学习记录都是一条记录。
+ * v3 统一记录：日常 / 记账 / 单词学习记录都是一条记录。
  * kind: "daily" 日常 | "expense" 记账 | "study" 单词学习记录
  * moneyKind 只在 kind == "expense" 时有值："expense" 支出 | "income" 收入
- * imagePath：图片存在本机内部存储的绝对路径（无图为 null）
+ * imagePath：v2 时代的单图字段，老数据原样保留（无图为 null）
+ * imagePaths：v3 起支持多图，用 "|" 拼起来的本机绝对路径；为空时回落到 imagePath
  */
 @Entity(tableName = "records")
 data class RecordEntry(
@@ -20,11 +21,19 @@ data class RecordEntry(
     val kind: String,
     val text: String = "",
     val imagePath: String? = null,
+    val imagePaths: String? = null,
     val amountCents: Long? = null,
     val category: String? = null,
     val moneyKind: String? = null,
     val createdAt: Long = System.currentTimeMillis()
 )
+
+/** 一条记录的全部图片：多图优先，老的单图字段兜底。 */
+fun RecordEntry.images(): List<String> {
+    val many = imagePaths?.split("|")?.map { it.trim() }?.filter { it.isNotEmpty() } ?: emptyList()
+    if (many.isNotEmpty()) return many
+    return listOfNotNull(imagePath?.takeIf { it.isNotBlank() })
+}
 
 /** 不记得的单词：学习时点了「不认识」的词，单独分组自己复习。 */
 @Entity(tableName = "unknown_words", indices = [Index(value = ["headword"], unique = true)])
@@ -62,11 +71,18 @@ val MIGRATION_1_2 = object : Migration(1, 2) {
     }
 }
 
-@Database(entities = [VocabularyCard::class, HabitEntry::class, ExpenseEntry::class, RecordEntry::class, UnknownWord::class], version = 2, exportSchema = true)
+/** v3：记录支持一条多图。只加一列，老数据（含 imagePath 的单图）原样保留。 */
+val MIGRATION_2_3 = object : Migration(2, 3) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL("ALTER TABLE `records` ADD COLUMN `imagePaths` TEXT")
+    }
+}
+
+@Database(entities = [VocabularyCard::class, HabitEntry::class, ExpenseEntry::class, RecordEntry::class, UnknownWord::class], version = 3, exportSchema = true)
 abstract class AppDatabase : RoomDatabase() {
     abstract fun cards(): CardDao; abstract fun habits(): HabitDao; abstract fun expenses(): ExpenseDao
     abstract fun records(): RecordDao; abstract fun unknownWords(): UnknownWordDao
     companion object { @Volatile private var instance: AppDatabase? = null
-        fun get(context: Context): AppDatabase = instance ?: synchronized(this) { instance ?: Room.databaseBuilder(context, AppDatabase::class.java, "student-local.db").addMigrations(MIGRATION_1_2).build().also { instance = it } }
+        fun get(context: Context): AppDatabase = instance ?: synchronized(this) { instance ?: Room.databaseBuilder(context, AppDatabase::class.java, "student-local.db").addMigrations(MIGRATION_1_2, MIGRATION_2_3).build().also { instance = it } }
     }
 }
