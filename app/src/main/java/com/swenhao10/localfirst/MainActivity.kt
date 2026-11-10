@@ -1,8 +1,12 @@
 package com.swenhao10.localfirst
 
+import android.Manifest
+import android.app.TimePickerDialog
 import android.content.Context
+import android.content.pm.PackageManager
 import android.graphics.BitmapFactory
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -13,6 +17,7 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -71,6 +76,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
+import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -91,6 +97,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
 import com.swenhao10.localfirst.data.AppDatabase
 import com.swenhao10.localfirst.data.CardDao
@@ -100,6 +107,9 @@ import com.swenhao10.localfirst.data.PackStore
 import com.swenhao10.localfirst.data.PackWord
 import com.swenhao10.localfirst.data.RecordDao
 import com.swenhao10.localfirst.data.RecordEntry
+import com.swenhao10.localfirst.data.ReminderScheduler
+import com.swenhao10.localfirst.data.SettingsStore
+import com.swenhao10.localfirst.data.ThemeMode
 import com.swenhao10.localfirst.data.UnknownWord
 import com.swenhao10.localfirst.data.UnknownWordDao
 import com.swenhao10.localfirst.data.VocabularyCard
@@ -137,6 +147,21 @@ private val ZhixingColors = lightColorScheme(
     onSurfaceVariant = Color(0xFF536360)
 )
 
+/** 深色配色：和白天同一套色板思路，主色提亮、背景/卡片/文字都换深色值。 */
+private val ZhixingDarkColors = darkColorScheme(
+    primary = Color(0xFF4DB8B2),
+    onPrimary = Color(0xFF073D3A),
+    primaryContainer = Color(0xFF0B3B38),
+    onPrimaryContainer = Color(0xFFD9F1E8),
+    secondary = Color(0xFFD99A6C),
+    secondaryContainer = Color(0xFF4A2E1E),
+    background = Color(0xFF121816),
+    surface = Color(0xFF1B2321),
+    surfaceVariant = Color(0xFF26312E),
+    onSurface = Color(0xFFE6EDEA),
+    onSurfaceVariant = Color(0xFFA7B5B1)
+)
+
 /** 记账分类（默认值，方案待定项） */
 private val EXPENSE_CATEGORIES = listOf("餐饮", "购物", "交通", "娱乐", "学习", "其他")
 private val INCOME_CATEGORIES = listOf("生活费", "兼职", "其他")
@@ -159,6 +184,13 @@ private fun LocalFirstApp(db: AppDatabase) {
     var packWords by remember { mutableStateOf<List<PackWord>>(emptyList()) }
     var packMeta by remember { mutableStateOf<PackMeta?>(null) }
     var packReady by remember { mutableStateOf(false) }
+    // 外观：从 SharedPreferences 读上次选的，重启还生效；跟随系统时读系统当前深浅
+    var themeMode by remember { mutableStateOf(SettingsStore.getThemeMode(context)) }
+    val useDarkTheme = when (themeMode) {
+        ThemeMode.LIGHT -> false
+        ThemeMode.DARK -> true
+        else -> isSystemInDarkTheme()
+    }
 
     LaunchedEffect(db) {
         withContext(Dispatchers.IO) {
@@ -175,7 +207,7 @@ private fun LocalFirstApp(db: AppDatabase) {
         }
     }
 
-    MaterialTheme(colorScheme = ZhixingColors) {
+    MaterialTheme(colorScheme = if (useDarkTheme) ZhixingDarkColors else ZhixingColors) {
         Scaffold(
             containerColor = MaterialTheme.colorScheme.background,
             snackbarHost = { SnackbarHost(snackbarHostState) },
@@ -255,7 +287,15 @@ private fun LocalFirstApp(db: AppDatabase) {
                             }
                         }
                     )
-                    Tab.DATA -> DataScreen(db, Modifier.padding(padding)) { message = it }
+                    Tab.DATA -> DataScreen(
+                        db,
+                        Modifier.padding(padding),
+                        themeMode,
+                        onThemeChange = { mode ->
+                            themeMode = mode
+                            SettingsStore.setThemeMode(context, mode)
+                        }
+                    ) { message = it }
                 }
             }
         }
@@ -792,11 +832,90 @@ private fun OverviewScreen(records: List<RecordEntry>, modifier: Modifier, onDel
     }
 }
 
-/** 我的：保留现有的数据页（导出本地备份、从备份恢复、隐私说明、离线可用）。 */
+/** 我的：保留现有的数据页（导出本地备份、从备份恢复、隐私说明、离线可用），
+ * 下面接设置区：通知设置 / 外观 / 关于。 */
 @Composable
-private fun DataScreen(db: AppDatabase, modifier: Modifier, onMessage: (String) -> Unit) {
+private fun DataScreen(
+    db: AppDatabase,
+    modifier: Modifier,
+    themeMode: String,
+    onThemeChange: (String) -> Unit,
+    onMessage: (String) -> Unit
+) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
+    var reviewEnabled by remember { mutableStateOf(SettingsStore.isReviewReminderEnabled(context)) }
+    var expenseEnabled by remember { mutableStateOf(SettingsStore.isExpenseReminderEnabled(context)) }
+    val (initialHour, initialMinute) = SettingsStore.getReminderTime(context)
+    var reminderHour by remember { mutableStateOf(initialHour) }
+    var reminderMinute by remember { mutableStateOf(initialMinute) }
+    var pendingKind by remember { mutableStateOf<String?>(null) }
+    val versionName = remember {
+        runCatching {
+            @Suppress("DEPRECATION")
+            context.packageManager.getPackageInfo(context.packageName, 0).versionName
+        }.getOrNull() ?: "0.3.0"
+    }
+
+    fun timeText() = "%02d:%02d".format(reminderHour, reminderMinute)
+
+    /** 开关打开且权限已有时真正生效：存开关 + 排一份每日任务。 */
+    fun enableReminder(kind: String) {
+        if (kind == ReminderScheduler.KIND_REVIEW) {
+            reviewEnabled = true
+            SettingsStore.setReviewReminderEnabled(context, true)
+        } else {
+            expenseEnabled = true
+            SettingsStore.setExpenseReminderEnabled(context, true)
+        }
+        ReminderScheduler.schedule(context, kind)
+        onMessage("已开启，每天 ${timeText()} 提醒")
+    }
+
+    // Android 13+ 开提醒要先拿到 POST_NOTIFICATIONS 权限；拒绝就开关保持关，只提示一句。
+    val permissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        val kind = pendingKind
+        pendingKind = null
+        if (kind == null) return@rememberLauncherForActivityResult
+        if (granted) enableReminder(kind)
+        else onMessage("需要通知权限才能提醒，可在系统设置里打开")
+    }
+
+    fun setReminder(kind: String, enabled: Boolean) {
+        if (!enabled) {
+            if (kind == ReminderScheduler.KIND_REVIEW) {
+                reviewEnabled = false
+                SettingsStore.setReviewReminderEnabled(context, false)
+            } else {
+                expenseEnabled = false
+                SettingsStore.setExpenseReminderEnabled(context, false)
+            }
+            ReminderScheduler.cancel(context, kind)
+            onMessage("已关闭提醒")
+            return
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+        ) {
+            pendingKind = kind
+            permissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+            return
+        }
+        enableReminder(kind)
+    }
+
+    /** 改提醒时间：存下来，已开的提醒按新时间重排。 */
+    fun pickReminderTime() {
+        TimePickerDialog(context, { _, hour, minute ->
+            reminderHour = hour
+            reminderMinute = minute
+            SettingsStore.setReminderTime(context, hour, minute)
+            if (reviewEnabled) ReminderScheduler.schedule(context, ReminderScheduler.KIND_REVIEW)
+            if (expenseEnabled) ReminderScheduler.schedule(context, ReminderScheduler.KIND_EXPENSE)
+            onMessage("提醒时间已改成 ${timeText()}")
+        }, reminderHour, reminderMinute, true).show()
+    }
+
     val export = androidx.activity.compose.rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/json")) { uri ->
         if (uri != null) scope.launch {
             val result = runCatching { withContext(Dispatchers.IO) { DataTransfer.export(context, uri, db) } }
@@ -824,6 +943,48 @@ private fun DataScreen(db: AppDatabase, modifier: Modifier, onMessage: (String) 
             }
         }
         item {
+            Text("通知设置", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+            Spacer(Modifier.height(8.dp))
+            Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface), shape = RoundedCornerShape(20.dp)) {
+                Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f)) {
+                            Text("背单词复习提醒", fontWeight = FontWeight.SemiBold)
+                            Text("每天到点提醒你复习单词", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                        Switch(checked = reviewEnabled, onCheckedChange = { setReminder(ReminderScheduler.KIND_REVIEW, it) })
+                    }
+                    HorizontalDivider()
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f)) {
+                            Text("记账提醒", fontWeight = FontWeight.SemiBold)
+                            Text("每天到点提醒你记一笔账", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                        Switch(checked = expenseEnabled, onCheckedChange = { setReminder(ReminderScheduler.KIND_EXPENSE, it) })
+                    }
+                    HorizontalDivider()
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f)) {
+                            Text("提醒时间", fontWeight = FontWeight.SemiBold)
+                            Text("两个提醒用同一个时间", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                        Text(timeText(), fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
+                        Spacer(Modifier.width(4.dp))
+                        TextButton(onClick = { pickReminderTime() }) { Text("改时间") }
+                    }
+                }
+            }
+        }
+        item {
+            Text("外观", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+            Spacer(Modifier.height(8.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                ThemeMode.ALL.forEach { mode ->
+                    ChoiceChip(ThemeMode.label(mode), themeMode == mode) { onThemeChange(mode) }
+                }
+            }
+        }
+        item {
             Text("备份与恢复", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
             Spacer(Modifier.height(8.dp))
             Button(onClick = { export.launch("zhixing-backup.json") }, modifier = Modifier.fillMaxWidth()) { Text("导出本地备份") }
@@ -832,6 +993,11 @@ private fun DataScreen(db: AppDatabase, modifier: Modifier, onMessage: (String) 
         item {
             HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
             ListItem(leadingContent = { Icon(Icons.Default.Settings, null) }, headlineContent = { Text("隐私说明") }, supportingContent = { Text("首版不上传学习、习惯或账目记录") })
+        }
+        item {
+            Text("关于", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+            Spacer(Modifier.height(8.dp))
+            ListItem(headlineContent = { Text("知行") }, supportingContent = { Text("版本 $versionName") })
         }
         item { Spacer(Modifier.height(88.dp)) }
     }

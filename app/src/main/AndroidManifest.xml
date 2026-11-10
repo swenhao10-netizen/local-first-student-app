@@ -1,6 +1,8 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <!-- 拍照用；不申请网络权限。相机不是必需功能，没有相机也能用相册。 -->
     <uses-permission android:name="android.permission.CAMERA" />
+    <!-- 每日提醒用（Android 13+ 运行时申请，拒绝则提醒不开）。 -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-feature android:name="android.hardware.camera" android:required="false" />
     <application android:theme="@style/Theme.LocalFirst" android:label="知行" android:icon="@drawable/ic_launcher" android:roundIcon="@drawable/ic_launcher" android:allowBackup="false" android:supportsRtl="true">
         <activity android:name=".MainActivity" android:exported="true">
