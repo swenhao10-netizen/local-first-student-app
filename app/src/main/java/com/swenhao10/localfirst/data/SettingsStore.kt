@@ -18,6 +18,9 @@ object SettingsStore {
     // 外观：ThemeMode 的取值
     const val KEY_THEME_MODE = "theme_mode"
 
+    // 外观：主题颜色（PaletteId 的取值，默认绿色）
+    const val KEY_PALETTE = "theme_palette"
+
     const val DEFAULT_HOUR = 21
     const val DEFAULT_MINUTE = 0
 
@@ -57,6 +60,33 @@ object SettingsStore {
 
     fun setThemeMode(context: Context, mode: String) {
         prefs(context).edit().putString(KEY_THEME_MODE, mode).apply()
+    }
+
+    /** 主题颜色，默认绿色（原来的主色）。 */
+    fun getPalette(context: Context): String =
+        prefs(context).getString(KEY_PALETTE, PaletteId.GREEN) ?: PaletteId.GREEN
+
+    fun setPalette(context: Context, id: String) {
+        prefs(context).edit().putString(KEY_PALETTE, id).apply()
+    }
+}
+
+/** 主题颜色可选值：绿（默认）/ 蓝 / 紫 / 橙 / 粉。 */
+object PaletteId {
+    const val GREEN = "green"
+    const val BLUE = "blue"
+    const val PURPLE = "purple"
+    const val ORANGE = "orange"
+    const val PINK = "pink"
+
+    val ALL = listOf(GREEN, BLUE, PURPLE, ORANGE, PINK)
+
+    fun label(id: String): String = when (id) {
+        BLUE -> "海蓝"
+        PURPLE -> "紫罗兰"
+        ORANGE -> "暖橙"
+        PINK -> "樱粉"
+        else -> "青绿"
     }
 }
 

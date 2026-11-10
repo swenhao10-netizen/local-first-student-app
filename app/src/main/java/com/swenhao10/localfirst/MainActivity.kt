@@ -105,6 +105,7 @@ import com.swenhao10.localfirst.data.DataTransfer
 import com.swenhao10.localfirst.data.PackMeta
 import com.swenhao10.localfirst.data.PackStore
 import com.swenhao10.localfirst.data.PackWord
+import com.swenhao10.localfirst.data.PaletteId
 import com.swenhao10.localfirst.data.RecordDao
 import com.swenhao10.localfirst.data.RecordEntry
 import com.swenhao10.localfirst.data.ReminderScheduler
@@ -162,8 +163,144 @@ private val ZhixingDarkColors = darkColorScheme(
     onSurfaceVariant = Color(0xFFA7B5B1)
 )
 
-/** 记账分类（默认值，方案待定项） */
-private val EXPENSE_CATEGORIES = listOf("餐饮", "购物", "交通", "娱乐", "学习", "其他")
+/** 海蓝：主色偏冷蓝，辅色留一点沙色，白底更清亮。 */
+private val OceanColors = lightColorScheme(
+    primary = Color(0xFF175D8D),
+    onPrimary = Color.White,
+    primaryContainer = Color(0xFFD6E8F7),
+    onPrimaryContainer = Color(0xFF072F49),
+    secondary = Color(0xFFA9713F),
+    secondaryContainer = Color(0xFFFFDDC4),
+    background = Color(0xFFF6F8FB),
+    surface = Color.White,
+    surfaceVariant = Color(0xFFE4EBF3),
+    onSurface = Color(0xFF16212B),
+    onSurfaceVariant = Color(0xFF4E5F70)
+)
+
+private val OceanDarkColors = darkColorScheme(
+    primary = Color(0xFF7FB6E0),
+    onPrimary = Color(0xFF05293F),
+    primaryContainer = Color(0xFF11384F),
+    onPrimaryContainer = Color(0xFFD6E8F7),
+    secondary = Color(0xFFD8A572),
+    secondaryContainer = Color(0xFF3E2A16),
+    background = Color(0xFF0F1519),
+    surface = Color(0xFF171F26),
+    surfaceVariant = Color(0xFF22303A),
+    onSurface = Color(0xFFE4ECF3),
+    onSurfaceVariant = Color(0xFFA6B6C4)
+)
+
+/** 紫罗兰：偏静的紫，浅色底带一点灰调，深色底不刺眼。 */
+private val VioletColors = lightColorScheme(
+    primary = Color(0xFF6A52A3),
+    onPrimary = Color.White,
+    primaryContainer = Color(0xFFE9E1F7),
+    onPrimaryContainer = Color(0xFF2C1D4A),
+    secondary = Color(0xFFA9763F),
+    secondaryContainer = Color(0xFFFFDDC4),
+    background = Color(0xFFF8F6FB),
+    surface = Color.White,
+    surfaceVariant = Color(0xFFEDE7F4),
+    onSurface = Color(0xFF1D1826),
+    onSurfaceVariant = Color(0xFF5B5470)
+)
+
+private val VioletDarkColors = darkColorScheme(
+    primary = Color(0xFFBB9BE8),
+    onPrimary = Color(0xFF2A1A45),
+    primaryContainer = Color(0xFF3A2A57),
+    onPrimaryContainer = Color(0xFFE9E1F7),
+    secondary = Color(0xFFD8A572),
+    secondaryContainer = Color(0xFF3E2A16),
+    background = Color(0xFF141118),
+    surface = Color(0xFF1C1823),
+    surfaceVariant = Color(0xFF2A2536),
+    onSurface = Color(0xFFE8E3EF),
+    onSurfaceVariant = Color(0xFFB0A9BE)
+)
+
+/** 暖橙：主色偏暖，辅色压成深绿，避免整页都在同一个暖调里。 */
+private val AmberColors = lightColorScheme(
+    primary = Color(0xFFB25C1D),
+    onPrimary = Color.White,
+    primaryContainer = Color(0xFFFFE2CB),
+    onPrimaryContainer = Color(0xFF3E1D06),
+    secondary = Color(0xFF3F6A57),
+    secondaryContainer = Color(0xFFD7EBDF),
+    background = Color(0xFFFDF8F4),
+    surface = Color.White,
+    surfaceVariant = Color(0xFFF1E6DC),
+    onSurface = Color(0xFF241A12),
+    onSurfaceVariant = Color(0xFF61544A)
+)
+
+private val AmberDarkColors = darkColorScheme(
+    primary = Color(0xFFFFB27A),
+    onPrimary = Color(0xFF4A2205),
+    primaryContainer = Color(0xFF6B3410),
+    onPrimaryContainer = Color(0xFFFFE2CB),
+    secondary = Color(0xFF95C7B0),
+    secondaryContainer = Color(0xFF22402F),
+    background = Color(0xFF17110D),
+    surface = Color(0xFF201913),
+    surfaceVariant = Color(0xFF2C241D),
+    onSurface = Color(0xFFF0E6DE),
+    onSurfaceVariant = Color(0xFFB7A899)
+)
+
+/** 樱粉：粉做主色但不发甜，辅色偏棕，深色底用烟粉。 */
+private val RoseColors = lightColorScheme(
+    primary = Color(0xFFB23A63),
+    onPrimary = Color.White,
+    primaryContainer = Color(0xFFFFDDE6),
+    onPrimaryContainer = Color(0xFF40071A),
+    secondary = Color(0xFF8A6A3F),
+    secondaryContainer = Color(0xFFF2E3CD),
+    background = Color(0xFFFDF7F9),
+    surface = Color.White,
+    surfaceVariant = Color(0xFFF4E5EB),
+    onSurface = Color(0xFF23171B),
+    onSurfaceVariant = Color(0xFF64545A)
+)
+
+private val RoseDarkColors = darkColorScheme(
+    primary = Color(0xFFFFA8C2),
+    onPrimary = Color(0xFF4B0D22),
+    primaryContainer = Color(0xFF641B33),
+    onPrimaryContainer = Color(0xFFFFDDE6),
+    secondary = Color(0xFFD9B07A),
+    secondaryContainer = Color(0xFF3E2A16),
+    background = Color(0xFF171013),
+    surface = Color(0xFF20171B),
+    surfaceVariant = Color(0xFF2C1F25),
+    onSurface = Color(0xFFF2E4E9),
+    onSurfaceVariant = Color(0xFFC0AAB2)
+)
+
+/** 一套主题色 = 浅色 + 深色两个 ColorScheme，按 PaletteId 取。 */
+private data class AppPalette(
+    val id: String,
+    val label: String,
+    val light: androidx.compose.material3.ColorScheme,
+    val dark: androidx.compose.material3.ColorScheme
+)
+
+private val APP_PALETTES = listOf(
+    AppPalette(PaletteId.GREEN, "青绿", ZhixingColors, ZhixingDarkColors),
+    AppPalette(PaletteId.BLUE, "海蓝", OceanColors, OceanDarkColors),
+    AppPalette(PaletteId.PURPLE, "紫罗兰", VioletColors, VioletDarkColors),
+    AppPalette(PaletteId.ORANGE, "暖橙", AmberColors, AmberDarkColors),
+    AppPalette(PaletteId.PINK, "樱粉", RoseColors, RoseDarkColors)
+)
+
+private fun paletteFor(id: String, dark: Boolean): androidx.compose.material3.ColorScheme {
+    val set = APP_PALETTES.firstOrNull { it.id == id } ?: APP_PALETTES.first()
+    return if (dark) set.dark else set.light
+}
+
+/** 记账分类（默认值，方案待定项） */private val EXPENSE_CATEGORIES = listOf("餐饮", "购物", "交通", "娱乐", "学习", "其他")
 private val INCOME_CATEGORIES = listOf("生活费", "兼职", "其他")
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -186,6 +323,8 @@ private fun LocalFirstApp(db: AppDatabase) {
     var packReady by remember { mutableStateOf(false) }
     // 外观：从 SharedPreferences 读上次选的，重启还生效；跟随系统时读系统当前深浅
     var themeMode by remember { mutableStateOf(SettingsStore.getThemeMode(context)) }
+    // 主题颜色：默认青绿（原来的主色），可换海蓝/紫罗兰/暖橙/樱粉
+    var paletteId by remember { mutableStateOf(SettingsStore.getPalette(context)) }
     val useDarkTheme = when (themeMode) {
         ThemeMode.LIGHT -> false
         ThemeMode.DARK -> true
@@ -207,7 +346,7 @@ private fun LocalFirstApp(db: AppDatabase) {
         }
     }
 
-    MaterialTheme(colorScheme = if (useDarkTheme) ZhixingDarkColors else ZhixingColors) {
+    MaterialTheme(colorScheme = paletteFor(paletteId, useDarkTheme)) {
         Scaffold(
             containerColor = MaterialTheme.colorScheme.background,
             snackbarHost = { SnackbarHost(snackbarHostState) },
@@ -294,6 +433,11 @@ private fun LocalFirstApp(db: AppDatabase) {
                         onThemeChange = { mode ->
                             themeMode = mode
                             SettingsStore.setThemeMode(context, mode)
+                        },
+                        paletteId = paletteId,
+                        onPaletteChange = { id ->
+                            paletteId = id
+                            SettingsStore.setPalette(context, id)
                         }
                     ) { message = it }
                 }
@@ -527,6 +671,26 @@ private fun ChoiceChip(label: String, selected: Boolean, onClick: () -> Unit) {
         contentColor = if (selected) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant
     ) {
         Text(label, style = MaterialTheme.typography.labelLarge, modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp))
+    }
+}
+
+/** 主题颜色选择：左边一个色点，后面是颜色名，选中态用当前主色填充。 */
+@Composable
+private fun PaletteChip(label: String, dotColor: Color, selected: Boolean, onClick: () -> Unit) {
+    Surface(
+        onClick = onClick,
+        shape = RoundedCornerShape(16.dp),
+        color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant,
+        contentColor = if (selected) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Box(Modifier.size(12.dp).background(dotColor, RoundedCornerShape(6.dp)))
+            Spacer(Modifier.width(6.dp))
+            Text(label, style = MaterialTheme.typography.labelLarge)
+        }
     }
 }
 
@@ -840,6 +1004,8 @@ private fun DataScreen(
     modifier: Modifier,
     themeMode: String,
     onThemeChange: (String) -> Unit,
+    paletteId: String,
+    onPaletteChange: (String) -> Unit,
     onMessage: (String) -> Unit
 ) {
     val context = LocalContext.current
@@ -981,6 +1147,19 @@ private fun DataScreen(
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 ThemeMode.ALL.forEach { mode ->
                     ChoiceChip(ThemeMode.label(mode), themeMode == mode) { onThemeChange(mode) }
+                }
+            }
+            Spacer(Modifier.height(14.dp))
+            Text("主题颜色", fontWeight = FontWeight.SemiBold)
+            Text("默认青绿；换一个色，主色、按钮、底部导航跟着变", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Spacer(Modifier.height(8.dp))
+            Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                APP_PALETTES.forEach { palette ->
+                    PaletteChip(
+                        label = palette.label,
+                        dotColor = palette.light.primary,
+                        selected = paletteId == palette.id
+                    ) { onPaletteChange(palette.id) }
                 }
             }
         }
