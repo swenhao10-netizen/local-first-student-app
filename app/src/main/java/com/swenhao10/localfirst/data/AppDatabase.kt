@@ -43,6 +43,7 @@ data class UnknownWord(
     @Query("SELECT * FROM records ORDER BY createdAt DESC") fun observeAll(): Flow<List<RecordEntry>>
     @Query("SELECT * FROM records ORDER BY createdAt DESC") suspend fun all(): List<RecordEntry>
     @Insert suspend fun insert(entry: RecordEntry): Long
+    @Update suspend fun update(entry: RecordEntry)
     @Query("DELETE FROM records WHERE id = :id") suspend fun delete(id: Long)
 }
 @Dao interface UnknownWordDao {

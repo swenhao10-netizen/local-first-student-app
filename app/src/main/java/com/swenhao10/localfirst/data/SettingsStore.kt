@@ -21,6 +21,19 @@ object SettingsStore {
     // 外观：主题颜色（PaletteId 的取值，默认绿色）
     const val KEY_PALETTE = "theme_palette"
 
+    // 首页头像名字
+    const val KEY_NICKNAME = "nickname"
+    const val DEFAULT_NICKNAME = "同学"
+
+    // 头像图片（本机文件路径，空 = 用默认简笔头像）
+    const val KEY_AVATAR = "avatar_path"
+
+    // 背单词进度
+    const val KEY_STUDY_INDEX = "study_index"
+    const val KEY_STUDY_KNOWN = "study_known"
+    const val KEY_STUDY_UNKNOWN = "study_unknown"
+    const val KEY_STUDY_ACTIVE = "study_active"
+
     const val DEFAULT_HOUR = 21
     const val DEFAULT_MINUTE = 0
 
@@ -69,7 +82,51 @@ object SettingsStore {
     fun setPalette(context: Context, id: String) {
         prefs(context).edit().putString(KEY_PALETTE, id).apply()
     }
+
+    /** 首页头像旁的名字，默认「同学」。 */
+    fun getNickname(context: Context): String =
+        prefs(context).getString(KEY_NICKNAME, DEFAULT_NICKNAME) ?: DEFAULT_NICKNAME
+
+    fun setNickname(context: Context, name: String) {
+        prefs(context).edit().putString(KEY_NICKNAME, name).apply()
+    }
+
+    /** 头像文件路径，空字符串表示还没换过，用默认简笔头像。 */
+    fun getAvatar(context: Context): String? =
+        prefs(context).getString(KEY_AVATAR, null)?.takeIf { it.isNotBlank() }
+
+    fun setAvatar(context: Context, path: String?) {
+        prefs(context).edit().putString(KEY_AVATAR, path).apply()
+    }
+
+    /** 背单词的进度：上次学到第几个、认识几个、不认识几个；关掉 App 再进来不再从头开始。 */
+    fun getStudyProgress(context: Context): StudySnapshot {
+        val p = prefs(context)
+        return StudySnapshot(
+            index = p.getInt(KEY_STUDY_INDEX, 0),
+            known = p.getInt(KEY_STUDY_KNOWN, 0),
+            unknown = p.getInt(KEY_STUDY_UNKNOWN, 0),
+            inStudy = p.getBoolean(KEY_STUDY_ACTIVE, false)
+        )
+    }
+
+    fun setStudyProgress(context: Context, snapshot: StudySnapshot) {
+        prefs(context).edit()
+            .putInt(KEY_STUDY_INDEX, snapshot.index)
+            .putInt(KEY_STUDY_KNOWN, snapshot.known)
+            .putInt(KEY_STUDY_UNKNOWN, snapshot.unknown)
+            .putBoolean(KEY_STUDY_ACTIVE, snapshot.inStudy)
+            .apply()
+    }
 }
+
+/** 背单词进度的快照，用来存 SharedPreferences。 */
+data class StudySnapshot(
+    val index: Int = 0,
+    val known: Int = 0,
+    val unknown: Int = 0,
+    val inStudy: Boolean = false
+)
 
 /** 主题颜色可选值：绿（默认）/ 蓝 / 紫 / 橙 / 粉。 */
 object PaletteId {
