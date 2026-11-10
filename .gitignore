@@ -10,5 +10,7 @@ app/schemas/
 # Keystore / signing
 *.jks
 *.keystore
+# 例外：固定 debug 签名，需要进仓库才能保证每次打包签名一致、可覆盖安装
+!keystore/zhixing-debug.jks
 # OS
 .DS_Store
