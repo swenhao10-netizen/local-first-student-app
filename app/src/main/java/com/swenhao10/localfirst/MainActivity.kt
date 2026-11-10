@@ -662,7 +662,7 @@ private fun WordsScreen(
         if (unknownWords.isEmpty()) {
             item { EmptyCard("还没有不记得的单词", "学习时点「不认识」的词会进这里，自己复习") }
         } else {
-            items(unknownWords, key = { it.id }) { word ->
+            items(unknownWords, key = { "unknown-${it.id}" }) { word ->
                 var expanded by remember { mutableStateOf(false) }
                 Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface), shape = RoundedCornerShape(18.dp)) {
                     Column(Modifier.fillMaxWidth().padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -689,7 +689,7 @@ private fun WordsScreen(
         if (cards.isEmpty()) {
             item { EmptyCard("还没有卡片", "点上面 + 添加第一张卡片") }
         } else {
-            items(cards, key = { it.id }) { card ->
+            items(cards, key = { "card-${it.id}" }) { card ->
                 Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface), shape = RoundedCornerShape(18.dp)) {
                     ListItem(
                         headlineContent = { Text(card.front, fontWeight = FontWeight.SemiBold) },
