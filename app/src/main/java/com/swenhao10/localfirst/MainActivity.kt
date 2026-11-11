@@ -40,6 +40,7 @@ import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.IntrinsicSize
@@ -416,6 +417,36 @@ private fun Modifier.glass(shape: RoundedCornerShape, tint: Color? = null, blurD
         },
         onDrawSurface = { drawRect(fill) }
     )
+}
+
+/**
+ * 卡片：玻璃主题下是真玻璃（模糊+折射背景），带颜色的卡片叠一层淡淡的同色；
+ * 关掉玻璃时就是原来的 Material 卡片。
+ */
+@Composable
+private fun GlassCard(
+    modifier: Modifier = Modifier,
+    color: Color = MaterialTheme.colorScheme.surface,
+    shape: RoundedCornerShape = RoundedCornerShape(18.dp),
+    onClick: (() -> Unit)? = null,
+    content: @Composable ColumnScope.() -> Unit
+) {
+    if (LocalBackdrop.current == null) {
+        if (onClick != null) {
+            Card(onClick = onClick, colors = CardDefaults.cardColors(containerColor = color), shape = shape, modifier = modifier, content = content)
+        } else {
+            Card(colors = CardDefaults.cardColors(containerColor = color), shape = shape, modifier = modifier, content = content)
+        }
+    } else {
+        val scheme = MaterialTheme.colorScheme
+        val plain = color == scheme.surface || color == scheme.surfaceVariant || color == scheme.background
+        Column(
+            modifier
+                .glass(shape, if (plain) null else color.copy(alpha = 0.40f))
+                .then(if (onClick != null) Modifier.clip(shape).clickable(onClick = onClick) else Modifier),
+            content = content
+        )
+    }
 }
 
 /** 玻璃背景：有自定义图就铺图（再压一层暗/亮让字看得清），没有就画默认渐变。 */
@@ -1516,7 +1547,7 @@ private fun recordDotColor(record: RecordEntry): Color = when {
 /** 一条记录：文字 / 图片 / 金额（记账）按有无显示。 */
 @Composable
 private fun RecordItemCard(record: RecordEntry, onDelete: () -> Unit, showDate: Boolean = false) {
-    Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface), shape = RoundedCornerShape(18.dp)) {
+    GlassCard(color = MaterialTheme.colorScheme.surface, shape = RoundedCornerShape(18.dp)) {
         Column(Modifier.fillMaxWidth().padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 val kindLabel = when (record.kind) {
@@ -2024,7 +2055,7 @@ private fun WordsScreen(
             )
             Spacer(Modifier.height(16.dp))
             // 词卡：标签 / 单词 / 音标 / 分隔线 / 释义 / 来源
-            Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface), shape = RoundedCornerShape(28.dp), modifier = Modifier.fillMaxWidth()) {
+            GlassCard(color = MaterialTheme.colorScheme.surface, shape = RoundedCornerShape(28.dp), modifier = Modifier.fillMaxWidth()) {
                 Column(
                     Modifier.fillMaxWidth().heightIn(min = 330.dp).padding(22.dp),
                     verticalArrangement = Arrangement.spacedBy(10.dp)
@@ -2177,7 +2208,7 @@ private fun WordsScreen(
             } else {
                 items(unknownWords, key = { "unknown-${it.id}" }) { word ->
                     var expanded by remember { mutableStateOf(false) }
-                    Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface), shape = RoundedCornerShape(18.dp)) {
+                    GlassCard(color = MaterialTheme.colorScheme.surface, shape = RoundedCornerShape(18.dp)) {
                         Column(Modifier.fillMaxWidth().padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                             Row(verticalAlignment = Alignment.CenterVertically) {
                                 Text(word.headword, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
@@ -2204,7 +2235,7 @@ private fun WordsScreen(
             Text("一词一卡，认识就下一个", color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
         item {
-            Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer), shape = RoundedCornerShape(24.dp)) {
+            GlassCard(color = MaterialTheme.colorScheme.primaryContainer, shape = RoundedCornerShape(24.dp)) {
                 Column(Modifier.fillMaxWidth().padding(20.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text(packMeta?.name ?: "内置词包", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onPrimaryContainer)
                     Text(
@@ -2233,9 +2264,9 @@ private fun WordsScreen(
         }
         item {
             // 入口卡：点进去才看到全部不记得的单词
-            Card(
+            GlassCard(
                 onClick = { showUnknownPage = true },
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                color = MaterialTheme.colorScheme.surface,
                 shape = RoundedCornerShape(18.dp)
             ) {
                 Row(Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 16.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -2263,7 +2294,7 @@ private fun WordsScreen(
             item { EmptyCard("还没有卡片", "点上面 + 添加第一张卡片") }
         } else {
             items(cards, key = { "card-${it.id}" }) { card ->
-                Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface), shape = RoundedCornerShape(18.dp)) {
+                GlassCard(color = MaterialTheme.colorScheme.surface, shape = RoundedCornerShape(18.dp)) {
                     ListItem(
                         trailingContent = {
                             IconButton(onClick = { cardToDelete = card }) {
@@ -2377,7 +2408,7 @@ private fun OverviewScreen(records: List<RecordEntry>, wordCount: Int, modifier:
             item {
                 val maxValue = byCategory.first().second.coerceAtLeast(1L)
                 val primary = MaterialTheme.colorScheme.primary
-                Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface), shape = RoundedCornerShape(20.dp)) {
+                GlassCard(color = MaterialTheme.colorScheme.surface, shape = RoundedCornerShape(20.dp)) {
                     Column(Modifier.fillMaxWidth().padding(18.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
                         Text("这个月花在哪", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
                         byCategory.forEach { (cat, cents) ->
@@ -2399,7 +2430,7 @@ private fun OverviewScreen(records: List<RecordEntry>, wordCount: Int, modifier:
         }
         item { SectionTitle("每天记了什么", "有记录的日子会标出来") }
         item {
-            Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface), shape = RoundedCornerShape(20.dp)) {
+            GlassCard(color = MaterialTheme.colorScheme.surface, shape = RoundedCornerShape(20.dp)) {
                 Column(Modifier.fillMaxWidth().padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         TextButton(onClick = { shiftMonth(-1) }) { Text("< 上个月") }
@@ -2469,8 +2500,8 @@ private fun OverviewScreen(records: List<RecordEntry>, wordCount: Int, modifier:
 /** 总览里的一个小统计块。 */
 @Composable
 private fun StatTile(value: String, label: String, modifier: Modifier = Modifier) {
-    Card(
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+    GlassCard(
+        color = MaterialTheme.colorScheme.surface,
         shape = RoundedCornerShape(18.dp),
         modifier = modifier
     ) {
@@ -2649,7 +2680,7 @@ private fun DataScreen(
             }
         }
         item {
-            Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface), shape = RoundedCornerShape(20.dp)) {
+            GlassCard(color = MaterialTheme.colorScheme.surface, shape = RoundedCornerShape(20.dp)) {
                 Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically) { Icon(Icons.Default.CloudOff, null, tint = MaterialTheme.colorScheme.primary); Spacer(Modifier.width(8.dp)); Text("离线可用", fontWeight = FontWeight.Bold) }
                     Text("记录、单词、账目都保存在这台手机。换机前请先导出备份。", color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -2660,7 +2691,7 @@ private fun DataScreen(
             Text("头像和昵称", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
             Spacer(Modifier.height(8.dp))
             val avatarThumb = rememberBitmap(avatarPath, 256)
-            Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface), shape = RoundedCornerShape(20.dp)) {
+            GlassCard(color = MaterialTheme.colorScheme.surface, shape = RoundedCornerShape(20.dp)) {
                 Column(Modifier.fillMaxWidth().padding(18.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Box(Modifier.size(44.dp).clip(CircleShape)) {
@@ -2691,7 +2722,7 @@ private fun DataScreen(
         item {
             Text("通知设置", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
             Spacer(Modifier.height(8.dp))
-            Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface), shape = RoundedCornerShape(20.dp)) {
+            GlassCard(color = MaterialTheme.colorScheme.surface, shape = RoundedCornerShape(20.dp)) {
                 Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Column(Modifier.weight(1f)) {
@@ -2724,7 +2755,7 @@ private fun DataScreen(
         item {
             Text("外观", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
             Spacer(Modifier.height(8.dp))
-            Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface), shape = RoundedCornerShape(20.dp)) {
+            GlassCard(color = MaterialTheme.colorScheme.surface, shape = RoundedCornerShape(20.dp)) {
                 Column(Modifier.fillMaxWidth().padding(16.dp)) {
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         ThemeMode.ALL.forEach { mode ->
@@ -2826,7 +2857,7 @@ private fun SectionTitle(title: String, subtitle: String) {
 
 @Composable
 private fun EmptyCard(title: String, subtitle: String) {
-    Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant), shape = RoundedCornerShape(18.dp)) {
+    GlassCard(color = MaterialTheme.colorScheme.surfaceVariant, shape = RoundedCornerShape(18.dp)) {
         Column(Modifier.fillMaxWidth().padding(20.dp)) { Text(title, fontWeight = FontWeight.SemiBold); Text(subtitle, color = MaterialTheme.colorScheme.onSurfaceVariant) }
     }
 }
