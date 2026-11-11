@@ -40,6 +40,7 @@ import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.IntrinsicSize
@@ -103,6 +104,7 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Slider
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -174,6 +176,25 @@ import com.swenhao10.localfirst.data.UnknownWord
 import com.swenhao10.localfirst.data.UnknownWordDao
 import com.swenhao10.localfirst.data.VocabularyCard
 import com.swenhao10.localfirst.data.images
+import com.swenhao10.localfirst.data.isVideoPath
+import com.swenhao10.localfirst.data.isVideoUri
+import com.swenhao10.localfirst.data.extensionFor
+import com.swenhao10.localfirst.data.videoFrame
+import com.swenhao10.localfirst.data.videoDurationMs
+import com.swenhao10.localfirst.data.formatDuration
+import com.swenhao10.localfirst.data.saveToGallery
+import com.swenhao10.localfirst.data.galleryNeedsPermission
+import com.swenhao10.localfirst.data.AiExport
+import android.content.Intent
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.widget.Toast
+import android.widget.VideoView
+import androidx.compose.ui.viewinterop.AndroidView
+import androidx.activity.result.PickVisualMediaRequest
+import androidx.compose.material.icons.filled.Download
+import androidx.compose.material.icons.filled.Pause
+import androidx.compose.material.icons.filled.Videocam
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -396,6 +417,36 @@ private fun Modifier.glass(shape: RoundedCornerShape, tint: Color? = null, blurD
         },
         onDrawSurface = { drawRect(fill) }
     )
+}
+
+/**
+ * 卡片：玻璃主题下是真玻璃（模糊+折射背景），带颜色的卡片叠一层淡淡的同色；
+ * 关掉玻璃时就是原来的 Material 卡片。
+ */
+@Composable
+private fun GlassCard(
+    modifier: Modifier = Modifier,
+    color: Color = MaterialTheme.colorScheme.surface,
+    shape: RoundedCornerShape = RoundedCornerShape(18.dp),
+    onClick: (() -> Unit)? = null,
+    content: @Composable ColumnScope.() -> Unit
+) {
+    if (LocalBackdrop.current == null) {
+        if (onClick != null) {
+            Card(onClick = onClick, colors = CardDefaults.cardColors(containerColor = color), shape = shape, modifier = modifier, content = content)
+        } else {
+            Card(colors = CardDefaults.cardColors(containerColor = color), shape = shape, modifier = modifier, content = content)
+        }
+    } else {
+        val scheme = MaterialTheme.colorScheme
+        val plain = color == scheme.surface || color == scheme.surfaceVariant || color == scheme.background
+        Column(
+            modifier
+                .glass(shape, if (plain) null else color.copy(alpha = 0.40f))
+                .then(if (onClick != null) Modifier.clip(shape).clickable(onClick = onClick) else Modifier),
+            content = content
+        )
+    }
 }
 
 /** 玻璃背景：有自定义图就铺图（再压一层暗/亮让字看得清），没有就画默认渐变。 */
@@ -760,7 +811,9 @@ private fun LocalFirstApp(db: AppDatabase) {
                 onPublish = { text, newUris, keptPaths, amountCents, category, moneyKind ->
                     scope.launch {
                         val addedPaths = newUris.mapIndexedNotNull { i, uri ->
-                            copyUriToInternal(context, uri, "img_${System.currentTimeMillis()}_$i.jpg")
+                            // 图片和视频都复制一份到 App 里：相册里的原文件删了，记录里的还在
+                            val prefix = if (isVideoUri(context, uri)) "vid" else "img"
+                            copyUriToInternal(context, uri, "${prefix}_${System.currentTimeMillis()}_$i.${extensionFor(context, uri)}")
                         }
                         val finalPaths = (keptPaths + addedPaths).take(9)
                         // 编辑时被删掉的旧图，连文件一起清掉
@@ -857,6 +910,7 @@ private fun RecordScreen(
     onDeleteRecord: (RecordEntry) -> Unit
 ) {
     var pendingAction by remember { mutableStateOf<RecordEntry?>(null) }
+    val saveRecordMedia = rememberGallerySaver()
     // 点图片看大图：当前这条的全部图片 + 点的是第几张
     var viewer by remember { mutableStateOf<Pair<List<String>, Int>?>(null) }
     val dayCount = remember(records) { records.map { dayKey(it.createdAt) }.distinct().size }
@@ -940,7 +994,12 @@ private fun RecordScreen(
                 }
             },
             dismissButton = {
-                TextButton(onClick = { pendingAction = null }) { Text("取消") }
+                Row {
+                    if (target.images().isNotEmpty()) {
+                        TextButton(onClick = { saveRecordMedia(target.images()); pendingAction = null }) { Text("存到相册") }
+                    }
+                    TextButton(onClick = { pendingAction = null }) { Text("取消") }
+                }
             }
         )
     }
@@ -1012,14 +1071,15 @@ private fun DayHeader(time: Long) {
 
 /** 发记录页里的缩略图格子：右上角 × 去掉这张。 */
 @Composable
-private fun ThumbCell(bitmap: androidx.compose.ui.graphics.ImageBitmap, onRemove: () -> Unit) {
+private fun ThumbCell(bitmap: androidx.compose.ui.graphics.ImageBitmap, isVideo: Boolean = false, onRemove: () -> Unit) {
     Box(Modifier.size(84.dp)) {
         Image(
             bitmap = bitmap,
-            contentDescription = "已选图片",
+            contentDescription = if (isVideo) "已选视频" else "已选图片",
             contentScale = ContentScale.Crop,
             modifier = Modifier.fillMaxSize().clip(RoundedCornerShape(12.dp))
         )
+        if (isVideo) PlayBadge(small = true)
         Box(
             modifier = Modifier
                 .align(Alignment.TopEnd)
@@ -1042,19 +1102,32 @@ private fun ThumbCell(bitmap: androidx.compose.ui.graphics.ImageBitmap, onRemove
 private fun RecordImages(paths: List<String>, modifier: Modifier = Modifier, onImageClick: ((Int) -> Unit)? = null) {
     if (paths.isEmpty()) return
     if (paths.size == 1) {
-        val bitmap = rememberBitmap(paths.first())
-        if (bitmap != null) {
-            Image(
-                bitmap = bitmap,
-                contentDescription = "记录图片",
-                contentScale = ContentScale.Crop,
+        val path = paths.first()
+        val video = isVideoPath(path)
+        val bitmap = rememberBitmap(path)
+        if (bitmap != null || video) {
+            Box(
                 modifier = modifier
                     .fillMaxWidth(0.7f)
                     .aspectRatio(3f / 2f)
                     .clip(RoundedCornerShape(16.dp))
                     .background(MaterialTheme.colorScheme.surfaceVariant)
                     .then(if (onImageClick != null) Modifier.clickable { onImageClick(0) } else Modifier)
-            )
+            ) {
+                if (bitmap != null) {
+                    Image(
+                        bitmap = bitmap,
+                        contentDescription = if (video) "记录视频" else "记录图片",
+                        contentScale = ContentScale.Crop,
+                        modifier = Modifier.fillMaxSize()
+                    )
+                }
+                if (video) {
+                    PlayBadge()
+                    val dur = remember(path) { videoDurationMs(path) }
+                    if (dur != null) DurationTag(dur, Modifier.align(Alignment.BottomEnd))
+                }
+            }
         }
         return
     }
@@ -1079,6 +1152,7 @@ private fun RecordImages(paths: List<String>, modifier: Modifier = Modifier, onI
                                 modifier = Modifier.fillMaxSize()
                             )
                         }
+                        if (isVideoPath(path)) PlayBadge(small = true)
                     }
                 }
                 repeat(3 - row.size) { Spacer(Modifier.weight(1f)) }
@@ -1151,7 +1225,11 @@ private fun ImageViewer(paths: List<String>, startIndex: Int, onDismiss: () -> U
         val pager = rememberPagerState(initialPage = startIndex.coerceIn(0, (paths.size - 1).coerceAtLeast(0))) { paths.size }
         Box(Modifier.fillMaxSize().background(Color.Black)) {
             HorizontalPager(state = pager, modifier = Modifier.fillMaxSize()) { page ->
-                ZoomableImage(path = paths[page], onTap = onDismiss)
+                if (isVideoPath(paths[page])) {
+                    VideoPage(path = paths[page], isCurrent = pager.currentPage == page)
+                } else {
+                    ZoomableImage(path = paths[page], onTap = onDismiss)
+                }
             }
             if (paths.size > 1) {
                 Text(
@@ -1161,10 +1239,16 @@ private fun ImageViewer(paths: List<String>, startIndex: Int, onDismiss: () -> U
                     modifier = Modifier.align(Alignment.BottomCenter).navigationBarsPadding().padding(bottom = 24.dp)
                 )
             }
-            IconButton(
-                onClick = onDismiss,
-                modifier = Modifier.align(Alignment.TopEnd).statusBarsPadding().padding(8.dp)
-            ) { Icon(Icons.Default.Close, contentDescription = "关闭", tint = Color.White) }
+            val saveToAlbum = rememberGallerySaver()
+            Row(
+                modifier = Modifier.align(Alignment.TopEnd).statusBarsPadding().padding(8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                IconButton(onClick = { paths.getOrNull(pager.currentPage)?.let { saveToAlbum(listOf(it)) } }) {
+                    Icon(Icons.Default.Download, contentDescription = "存到相册", tint = Color.White)
+                }
+                IconButton(onClick = onDismiss) { Icon(Icons.Default.Close, contentDescription = "关闭", tint = Color.White) }
+            }
         }
     }
 }
@@ -1218,6 +1302,158 @@ private fun ZoomableImage(path: String, onTap: () -> Unit) {
         } else {
             Text("这张图找不到了", color = Color.White)
         }
+    }
+}
+
+/** 视频缩略图中间的播放标。 */
+@Composable
+private fun PlayBadge(small: Boolean = false) {
+    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+        Box(
+            Modifier
+                .size(if (small) 28.dp else 44.dp)
+                .background(Color.Black.copy(alpha = 0.45f), CircleShape),
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(Icons.Default.PlayArrow, contentDescription = "视频", tint = Color.White, modifier = Modifier.size(if (small) 18.dp else 28.dp))
+        }
+    }
+}
+
+@Composable
+private fun DurationTag(ms: Long, modifier: Modifier = Modifier) {
+    Text(
+        formatDuration(ms),
+        color = Color.White,
+        style = MaterialTheme.typography.labelSmall,
+        modifier = modifier
+            .padding(8.dp)
+            .background(Color.Black.copy(alpha = 0.45f), RoundedCornerShape(6.dp))
+            .padding(horizontal = 6.dp, vertical = 2.dp)
+    )
+}
+
+/**
+ * 看视频：系统 VideoView 播放（不加第三方库）。翻到这一页自动播放，翻走暂停；
+ * 点一下暂停/继续，底部进度条可拖。
+ */
+@Composable
+private fun VideoPage(path: String, isCurrent: Boolean) {
+    var view by remember { mutableStateOf<VideoView?>(null) }
+    var playing by remember { mutableStateOf(false) }
+    var prepared by remember { mutableStateOf(false) }
+    var failed by remember { mutableStateOf(false) }
+    var position by remember { mutableStateOf(0) }
+    var duration by remember { mutableStateOf(0) }
+    val exists = remember(path) { File(path).exists() }
+    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+        if (!exists || failed) {
+            Text("这个视频找不到了或放不了", color = Color.White)
+            return@Box
+        }
+        AndroidView(
+            factory = { ctx ->
+                VideoView(ctx).apply {
+                    setOnPreparedListener { mp ->
+                        prepared = true
+                        duration = mp.duration
+                        mp.isLooping = false
+                    }
+                    setOnCompletionListener { playing = false; position = duration }
+                    setOnErrorListener { _, _, _ -> failed = true; true }
+                    setVideoPath(path)
+                    view = this
+                }
+            },
+            onRelease = { it.stopPlayback() },
+            modifier = Modifier.fillMaxWidth()
+        )
+        // 透明点击层：点一下播放/暂停；左右滑不拦，留给翻页
+        Box(
+            Modifier
+                .fillMaxSize()
+                .pointerInput(Unit) {
+                    detectTapGestures(onTap = {
+                        val v = view ?: return@detectTapGestures
+                        if (v.isPlaying) { v.pause(); playing = false } else { v.start(); playing = true }
+                    })
+                }
+        )
+        if (!playing) {
+            Box(
+                Modifier.size(64.dp).background(Color.Black.copy(alpha = 0.45f), CircleShape),
+                contentAlignment = Alignment.Center
+            ) { Icon(Icons.Default.PlayArrow, contentDescription = "播放", tint = Color.White, modifier = Modifier.size(40.dp)) }
+        }
+        if (prepared && duration > 0) {
+            Row(
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .fillMaxWidth()
+                    .navigationBarsPadding()
+                    .padding(start = 16.dp, end = 16.dp, bottom = 56.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(formatDuration(position.toLong()), color = Color.White, style = MaterialTheme.typography.labelMedium)
+                Slider(
+                    value = position.toFloat().coerceIn(0f, duration.toFloat()),
+                    onValueChange = { v -> position = v.toInt(); view?.seekTo(v.toInt()) },
+                    valueRange = 0f..duration.toFloat(),
+                    modifier = Modifier.weight(1f).padding(horizontal = 8.dp)
+                )
+                Text(formatDuration(duration.toLong()), color = Color.White, style = MaterialTheme.typography.labelMedium)
+            }
+        }
+    }
+    LaunchedEffect(isCurrent, prepared) {
+        val v = view ?: return@LaunchedEffect
+        if (isCurrent && prepared) { v.start(); playing = true } else if (!isCurrent) { v.pause(); playing = false }
+    }
+    LaunchedEffect(playing) {
+        while (playing) {
+            view?.let { position = it.currentPosition }
+            delay(250)
+        }
+    }
+}
+
+/**
+ * 存到相册：传入本机路径，图片进 Pictures/知行，视频进 Movies/知行。
+ * Android 9 及以下先要存储权限；结果用 Toast 提示（看大图是全屏 Dialog，Snackbar 看不到）。
+ */
+@Composable
+private fun rememberGallerySaver(): (List<String>) -> Unit {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    var pending by remember { mutableStateOf<List<String>>(emptyList()) }
+    val doSave: (List<String>) -> Unit = { paths ->
+        if (paths.isEmpty()) {
+            Toast.makeText(context, "还没有照片或视频", Toast.LENGTH_SHORT).show()
+        } else {
+            scope.launch {
+                val ok = withContext(Dispatchers.IO) { paths.count { saveToGallery(context, it) } }
+                val msg = when {
+                    ok == 0 -> "没存成，文件可能已经不在了"
+                    ok == paths.size && ok == 1 -> "已存到相册「知行」"
+                    ok == paths.size -> "已把 $ok 个照片和视频存到相册「知行」"
+                    else -> "存好 $ok 个，${paths.size - ok} 个没存成"
+                }
+                Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
+    val permission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        val p = pending
+        pending = emptyList()
+        if (granted) doSave(p) else Toast.makeText(context, "没有存储权限，存不了相册", Toast.LENGTH_SHORT).show()
+    }
+    return { paths ->
+        if (galleryNeedsPermission() &&
+            ContextCompat.checkSelfPermission(context, Manifest.permission.WRITE_EXTERNAL_STORAGE) != PackageManager.PERMISSION_GRANTED
+        ) {
+            pending = paths
+            permission.launch(Manifest.permission.WRITE_EXTERNAL_STORAGE)
+        } else doSave(paths)
     }
 }
 
@@ -1311,7 +1547,7 @@ private fun recordDotColor(record: RecordEntry): Color = when {
 /** 一条记录：文字 / 图片 / 金额（记账）按有无显示。 */
 @Composable
 private fun RecordItemCard(record: RecordEntry, onDelete: () -> Unit, showDate: Boolean = false) {
-    Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface), shape = RoundedCornerShape(18.dp)) {
+    GlassCard(color = MaterialTheme.colorScheme.surface, shape = RoundedCornerShape(18.dp)) {
         Column(Modifier.fillMaxWidth().padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 val kindLabel = when (record.kind) {
@@ -1382,7 +1618,7 @@ private fun AddRecordScreen(
     val context = LocalContext.current
     val categories = if (moneyKind == "income") INCOME_CATEGORIES else EXPENSE_CATEGORIES
     val totalImages = newUris.size + keptPaths.size
-    val galleryLauncher = rememberLauncherForActivityResult(ActivityResultContracts.GetMultipleContents()) { uris ->
+    val galleryLauncher = rememberLauncherForActivityResult(ActivityResultContracts.PickMultipleVisualMedia(9)) { uris ->
         val room = (9 - newUris.size - keptPaths.size).coerceAtLeast(0)
         if (uris.isNotEmpty() && room > 0) {
             uris.map { it.toString() }.distinct().forEach { s ->
@@ -1394,12 +1630,24 @@ private fun AddRecordScreen(
         val uri = pendingPhotoUri
         if (ok && uri != null && newUris.size + keptPaths.size < 9) newUris.add(uri)
     }
+    var wantVideo by remember { mutableStateOf(false) }
+    var pendingVideoUri by remember { mutableStateOf<Uri?>(null) }
+    val videoLauncher = rememberLauncherForActivityResult(ActivityResultContracts.CaptureVideo()) { ok ->
+        val uri = pendingVideoUri
+        if (ok && uri != null && newUris.size + keptPaths.size < 9) newUris.add(uri)
+    }
     val permissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
         if (granted) {
-            val file = createPhotoFile(context)
-            val uri = photoUri(context, file)
-            pendingPhotoUri = uri
-            cameraLauncher.launch(uri)
+            if (wantVideo) {
+                val uri = photoUri(context, createVideoFile(context))
+                pendingVideoUri = uri
+                videoLauncher.launch(uri)
+            } else {
+                val file = createPhotoFile(context)
+                val uri = photoUri(context, file)
+                pendingPhotoUri = uri
+                cameraLauncher.launch(uri)
+            }
         }
     }
     val amountCents = amount.toDoubleOrNull()?.let { (it * 100).toLong() }?.takeIf { it > 0 }
@@ -1495,12 +1743,13 @@ private fun AddRecordScreen(
                         ) {
                             keptPaths.forEach { path ->
                                 rememberBitmap(path, 512)?.let { old ->
-                                    ThumbCell(bitmap = old, onRemove = { keptPaths.remove(path) })
+                                    ThumbCell(bitmap = old, isVideo = isVideoPath(path), onRemove = { keptPaths.remove(path) })
                                 }
                             }
                             newUris.forEach { uri ->
+                                val uriIsVideo = remember(uri) { isVideoUri(context, uri) }
                                 rememberUriBitmap(uri)?.let { bmp ->
-                                    ThumbCell(bitmap = bmp, onRemove = { newUris.remove(uri) })
+                                    ThumbCell(bitmap = bmp, isVideo = uriIsVideo, onRemove = { newUris.remove(uri) })
                                 }
                             }
                             if (totalImages < 9) {
@@ -1519,7 +1768,7 @@ private fun AddRecordScreen(
                                                 )
                                             )
                                         }
-                                        .clickable { galleryLauncher.launch("image/*") },
+                                        .clickable { galleryLauncher.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageAndVideo)) },
                                     contentAlignment = Alignment.Center
                                 ) {
                                     Icon(Icons.Default.Add, contentDescription = "加图", tint = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -1658,9 +1907,11 @@ private fun AddRecordScreen(
                     modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    BottomPill("相册", Icons.Default.Image) { galleryLauncher.launch("image/*") }
+                    BottomPill("相册", Icons.Default.Image) { galleryLauncher.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageAndVideo)) }
                     Spacer(Modifier.width(10.dp))
-                    BottomPill("拍照", Icons.Default.PhotoCamera) { permissionLauncher.launch(android.Manifest.permission.CAMERA) }
+                    BottomPill("拍照", Icons.Default.PhotoCamera) { wantVideo = false; permissionLauncher.launch(android.Manifest.permission.CAMERA) }
+                    Spacer(Modifier.width(10.dp))
+                    BottomPill("录像", Icons.Default.Videocam) { wantVideo = true; permissionLauncher.launch(android.Manifest.permission.CAMERA) }
                     Spacer(Modifier.weight(1f))
                     Text(
                         "现在 $nowText",
@@ -1804,7 +2055,7 @@ private fun WordsScreen(
             )
             Spacer(Modifier.height(16.dp))
             // 词卡：标签 / 单词 / 音标 / 分隔线 / 释义 / 来源
-            Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface), shape = RoundedCornerShape(28.dp), modifier = Modifier.fillMaxWidth()) {
+            GlassCard(color = MaterialTheme.colorScheme.surface, shape = RoundedCornerShape(28.dp), modifier = Modifier.fillMaxWidth()) {
                 Column(
                     Modifier.fillMaxWidth().heightIn(min = 330.dp).padding(22.dp),
                     verticalArrangement = Arrangement.spacedBy(10.dp)
@@ -1957,7 +2208,7 @@ private fun WordsScreen(
             } else {
                 items(unknownWords, key = { "unknown-${it.id}" }) { word ->
                     var expanded by remember { mutableStateOf(false) }
-                    Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface), shape = RoundedCornerShape(18.dp)) {
+                    GlassCard(color = MaterialTheme.colorScheme.surface, shape = RoundedCornerShape(18.dp)) {
                         Column(Modifier.fillMaxWidth().padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                             Row(verticalAlignment = Alignment.CenterVertically) {
                                 Text(word.headword, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
@@ -1984,7 +2235,7 @@ private fun WordsScreen(
             Text("一词一卡，认识就下一个", color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
         item {
-            Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer), shape = RoundedCornerShape(24.dp)) {
+            GlassCard(color = MaterialTheme.colorScheme.primaryContainer, shape = RoundedCornerShape(24.dp)) {
                 Column(Modifier.fillMaxWidth().padding(20.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text(packMeta?.name ?: "内置词包", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onPrimaryContainer)
                     Text(
@@ -2013,9 +2264,9 @@ private fun WordsScreen(
         }
         item {
             // 入口卡：点进去才看到全部不记得的单词
-            Card(
+            GlassCard(
                 onClick = { showUnknownPage = true },
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                color = MaterialTheme.colorScheme.surface,
                 shape = RoundedCornerShape(18.dp)
             ) {
                 Row(Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 16.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -2043,7 +2294,7 @@ private fun WordsScreen(
             item { EmptyCard("还没有卡片", "点上面 + 添加第一张卡片") }
         } else {
             items(cards, key = { "card-${it.id}" }) { card ->
-                Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface), shape = RoundedCornerShape(18.dp)) {
+                GlassCard(color = MaterialTheme.colorScheme.surface, shape = RoundedCornerShape(18.dp)) {
                     ListItem(
                         trailingContent = {
                             IconButton(onClick = { cardToDelete = card }) {
@@ -2157,7 +2408,7 @@ private fun OverviewScreen(records: List<RecordEntry>, wordCount: Int, modifier:
             item {
                 val maxValue = byCategory.first().second.coerceAtLeast(1L)
                 val primary = MaterialTheme.colorScheme.primary
-                Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface), shape = RoundedCornerShape(20.dp)) {
+                GlassCard(color = MaterialTheme.colorScheme.surface, shape = RoundedCornerShape(20.dp)) {
                     Column(Modifier.fillMaxWidth().padding(18.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
                         Text("这个月花在哪", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
                         byCategory.forEach { (cat, cents) ->
@@ -2179,7 +2430,7 @@ private fun OverviewScreen(records: List<RecordEntry>, wordCount: Int, modifier:
         }
         item { SectionTitle("每天记了什么", "有记录的日子会标出来") }
         item {
-            Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface), shape = RoundedCornerShape(20.dp)) {
+            GlassCard(color = MaterialTheme.colorScheme.surface, shape = RoundedCornerShape(20.dp)) {
                 Column(Modifier.fillMaxWidth().padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         TextButton(onClick = { shiftMonth(-1) }) { Text("< 上个月") }
@@ -2249,8 +2500,8 @@ private fun OverviewScreen(records: List<RecordEntry>, wordCount: Int, modifier:
 /** 总览里的一个小统计块。 */
 @Composable
 private fun StatTile(value: String, label: String, modifier: Modifier = Modifier) {
-    Card(
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+    GlassCard(
+        color = MaterialTheme.colorScheme.surface,
         shape = RoundedCornerShape(18.dp),
         modifier = modifier
     ) {
@@ -2290,11 +2541,56 @@ private fun DataScreen(
     var reminderHour by remember { mutableStateOf(initialHour) }
     var reminderMinute by remember { mutableStateOf(initialMinute) }
     var pendingKind by remember { mutableStateOf<String?>(null) }
+    val saveAllMedia = rememberGallerySaver()
+    var showAiExport by remember { mutableStateOf(false) }
+    fun exportForAi(days: Int?) {
+        scope.launch {
+            val result = runCatching {
+                val text = withContext(Dispatchers.IO) { AiExport.build(db.records().all(), nickname, days) }
+                val dir = File(context.cacheDir, "export").apply { mkdirs() }
+                val file = File(dir, "知行_生活记录.md")
+                withContext(Dispatchers.IO) { file.writeText(text) }
+                // 不太长就顺手复制，粘贴进任何 AI 对话框都行
+                if (text.length <= 100_000) {
+                    val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                    cm.setPrimaryClip(ClipData.newPlainText("知行生活记录", text))
+                }
+                val uri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
+                val send = Intent(Intent.ACTION_SEND).apply {
+                    type = "text/plain"
+                    putExtra(Intent.EXTRA_STREAM, uri)
+                    putExtra(Intent.EXTRA_SUBJECT, "我的生活记录（知行导出）")
+                    clipData = ClipData.newRawUri("知行生活记录", uri)
+                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                }
+                context.startActivity(Intent.createChooser(send, "发给 AI").addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+                text.length <= 100_000
+            }
+            onMessage(result.fold({ copied -> if (copied) "已复制，也可以直接分享给 AI App" else "记录太多没法复制，用分享发文件吧" }, { "导出失败：${it.message ?: "未知错误"}" }))
+        }
+    }
+    if (showAiExport) {
+        AlertDialog(
+            onDismissRequest = { showAiExport = false },
+            title = { Text("导出给 AI") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("把记录整理成一份文字，开头带给 AI 的说明。发给任意 AI，它读完就能大致了解你。")
+                    Text("只导出文字、账目和背词情况，照片视频只写数量。导出后由你自己决定发给谁。", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    listOf(7 to "最近 7 天", 30 to "最近 30 天", null to "全部记录").forEach { (d, label) ->
+                        OutlinedButton(onClick = { showAiExport = false; exportForAi(d) }, modifier = Modifier.fillMaxWidth()) { Text(label) }
+                    }
+                }
+            },
+            confirmButton = {},
+            dismissButton = { TextButton(onClick = { showAiExport = false }) { Text("取消") } }
+        )
+    }
     val versionName = remember {
         runCatching {
             @Suppress("DEPRECATION")
             context.packageManager.getPackageInfo(context.packageName, 0).versionName
-        }.getOrNull() ?: "0.4.0"
+        }.getOrNull() ?: "0.5.0"
     }
 
     fun timeText() = "%02d:%02d".format(reminderHour, reminderMinute)
@@ -2384,7 +2680,7 @@ private fun DataScreen(
             }
         }
         item {
-            Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface), shape = RoundedCornerShape(20.dp)) {
+            GlassCard(color = MaterialTheme.colorScheme.surface, shape = RoundedCornerShape(20.dp)) {
                 Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically) { Icon(Icons.Default.CloudOff, null, tint = MaterialTheme.colorScheme.primary); Spacer(Modifier.width(8.dp)); Text("离线可用", fontWeight = FontWeight.Bold) }
                     Text("记录、单词、账目都保存在这台手机。换机前请先导出备份。", color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -2395,7 +2691,7 @@ private fun DataScreen(
             Text("头像和昵称", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
             Spacer(Modifier.height(8.dp))
             val avatarThumb = rememberBitmap(avatarPath, 256)
-            Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface), shape = RoundedCornerShape(20.dp)) {
+            GlassCard(color = MaterialTheme.colorScheme.surface, shape = RoundedCornerShape(20.dp)) {
                 Column(Modifier.fillMaxWidth().padding(18.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Box(Modifier.size(44.dp).clip(CircleShape)) {
@@ -2426,7 +2722,7 @@ private fun DataScreen(
         item {
             Text("通知设置", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
             Spacer(Modifier.height(8.dp))
-            Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface), shape = RoundedCornerShape(20.dp)) {
+            GlassCard(color = MaterialTheme.colorScheme.surface, shape = RoundedCornerShape(20.dp)) {
                 Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Column(Modifier.weight(1f)) {
@@ -2459,7 +2755,7 @@ private fun DataScreen(
         item {
             Text("外观", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
             Spacer(Modifier.height(8.dp))
-            Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface), shape = RoundedCornerShape(20.dp)) {
+            GlassCard(color = MaterialTheme.colorScheme.surface, shape = RoundedCornerShape(20.dp)) {
                 Column(Modifier.fillMaxWidth().padding(16.dp)) {
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         ThemeMode.ALL.forEach { mode ->
@@ -2504,6 +2800,21 @@ private fun DataScreen(
             Spacer(Modifier.height(8.dp))
             Button(onClick = { export.launch("zhixing-backup.json") }, modifier = Modifier.fillMaxWidth()) { Text("导出本地备份") }
             OutlinedButton(onClick = { import.launch(arrayOf("application/json", "text/plain")) }, modifier = Modifier.fillMaxWidth()) { Text("从备份恢复") }
+            OutlinedButton(
+                onClick = {
+                    scope.launch {
+                        val all = withContext(Dispatchers.IO) { db.records().all().flatMap { it.images() }.filter { File(it).exists() } }
+                        saveAllMedia(all)
+                    }
+                },
+                modifier = Modifier.fillMaxWidth()
+            ) { Text("照片和视频全部存到相册") }
+            OutlinedButton(onClick = { showAiExport = true }, modifier = Modifier.fillMaxWidth()) { Text("导出给 AI，让它了解我") }
+            Text(
+                "记录里的照片和视频都另存了一份在知行里，相册里删了也不影响。卸载或换机前点上面这个，会存一份到相册「知行」。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
         }
         item {
             HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
@@ -2546,7 +2857,7 @@ private fun SectionTitle(title: String, subtitle: String) {
 
 @Composable
 private fun EmptyCard(title: String, subtitle: String) {
-    Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant), shape = RoundedCornerShape(18.dp)) {
+    GlassCard(color = MaterialTheme.colorScheme.surfaceVariant, shape = RoundedCornerShape(18.dp)) {
         Column(Modifier.fillMaxWidth().padding(20.dp)) { Text(title, fontWeight = FontWeight.SemiBold); Text(subtitle, color = MaterialTheme.colorScheme.onSurfaceVariant) }
     }
 }
@@ -2606,7 +2917,7 @@ private fun monthCells(year: Int, month: Int): List<Int?> {
 private fun labelFor(record: RecordEntry): String = when (record.kind) {
     "expense" -> (if (record.moneyKind == "income") "+" else "-") + formatMoneyShort(record.amountCents ?: 0)
     "study" -> "背单词"
-    else -> if (record.text.isBlank()) "图片" else record.text.take(4)
+    else -> if (record.text.isNotBlank()) record.text.take(4) else if (record.images().any { isVideoPath(it) }) "视频" else "图片"
 }
 
 /** 按图片路径解码一张缩略图（本机文件不存在或损坏返回 null）。 */
@@ -2614,6 +2925,7 @@ private fun labelFor(record: RecordEntry): String = when (record.kind) {
 private fun rememberBitmap(path: String?, maxDim: Int = 1024): androidx.compose.ui.graphics.ImageBitmap? {
     return remember(path) {
         if (path == null) return@remember null
+        if (isVideoPath(path)) return@remember videoFrame(path, maxDim)?.asImageBitmap()
         try {
             val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
             BitmapFactory.decodeFile(path, bounds)
@@ -2634,6 +2946,7 @@ private fun rememberUriBitmap(uri: Uri?, maxDim: Int = 512): androidx.compose.ui
     val context = LocalContext.current
     return remember(uri) {
         if (uri == null) return@remember null
+        if (isVideoUri(context, uri)) return@remember videoFrame(context, uri, maxDim)?.asImageBitmap()
         try {
             val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
             context.contentResolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, bounds) }
@@ -2671,6 +2984,11 @@ private suspend fun copyUriToInternal(context: Context, uri: Uri, name: String):
     } catch (e: Exception) {
         null
     }
+}
+
+private fun createVideoFile(context: Context): File {
+    val dir = File(context.cacheDir, "photos").apply { mkdirs() }
+    return File(dir, "video_${System.currentTimeMillis()}.mp4")
 }
 
 private fun createPhotoFile(context: Context): File {
