@@ -83,6 +83,14 @@ object SettingsStore {
         prefs(context).edit().putString(KEY_PALETTE, id).apply()
     }
 
+    /** 自定义背景图（本机文件路径），空 = 默认渐变。 */
+    fun getBackground(context: Context): String? =
+        prefs(context).getString("bg_image", null)?.takeIf { it.isNotBlank() }
+
+    fun setBackground(context: Context, path: String?) {
+        prefs(context).edit().putString("bg_image", path ?: "").apply()
+    }
+
     /** 磨砂玻璃主题，默认开。 */
     fun isGlassEnabled(context: Context): Boolean =
         prefs(context).getBoolean("glass_theme", true)

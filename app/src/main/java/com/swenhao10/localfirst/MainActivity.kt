@@ -112,6 +112,14 @@ import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import com.kyant.backdrop.drawBackdrop
+import com.kyant.backdrop.backdrops.LayerBackdrop
+import com.kyant.backdrop.backdrops.layerBackdrop
+import com.kyant.backdrop.backdrops.rememberLayerBackdrop
+import com.kyant.backdrop.effects.blur
+import com.kyant.backdrop.effects.lens
+import com.kyant.backdrop.effects.vibrancy
+import androidx.compose.ui.graphics.Shape
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.foundation.border
@@ -360,6 +368,47 @@ private fun paletteFor(id: String, dark: Boolean): androidx.compose.material3.Co
 
 /** 磨砂玻璃主题开关：开着时背景是柔和渐变，卡片、底栏都是半透明的“玻璃”。 */
 private val LocalGlass = staticCompositionLocalOf { false }
+/** 玻璃要“透过去”看到的那层背景；null = 没开玻璃，退回普通半透明。 */
+private val LocalBackdrop = staticCompositionLocalOf<LayerBackdrop?> { null }
+/** 自定义背景图路径；null = 默认渐变。 */
+private val LocalBgPath = staticCompositionLocalOf<String?> { null }
+
+/**
+ * 真·玻璃：模糊 + 透镜折射背后的背景，再叠一层淡淡的底色。
+ * Android 12 以下没有模糊，库会自动跳过，只剩半透明底色。
+ */
+@Composable
+private fun Modifier.glass(shape: RoundedCornerShape, tint: Color? = null, blurDp: Float = 14f, lensDp: Float = 14f): Modifier {
+    val backdrop = LocalBackdrop.current
+    val dark = MaterialTheme.colorScheme.background.red < 0.5f
+    val fill = tint ?: if (dark) Color(0x52202C2A) else Color(0x66FFFFFF)
+    if (backdrop == null) return this.clip(shape).background(MaterialTheme.colorScheme.surface)
+    return this.drawBackdrop(
+        backdrop = backdrop,
+        shape = { shape },
+        effects = {
+            vibrancy()
+            blur(blurDp.dp.toPx())
+            lens(lensDp.dp.toPx(), (lensDp * 2).dp.toPx())
+        },
+        onDrawSurface = { drawRect(fill) }
+    )
+}
+
+/** 玻璃背景：有自定义图就铺图（再压一层暗/亮让字看得清），没有就画默认渐变。 */
+@Composable
+private fun GlassBackground(dark: Boolean, modifier: Modifier = Modifier) {
+    val path = LocalBgPath.current
+    val bmp = rememberBitmap(path, 1600)
+    Box(modifier.fillMaxSize()) {
+        if (bmp != null) {
+            Image(bitmap = bmp, contentDescription = null, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize())
+            Box(Modifier.fillMaxSize().background(if (dark) Color(0x73000000) else Color(0x4DFFFFFF)))
+        } else {
+            GlassBackdrop(dark)
+        }
+    }
+}
 
 /** 玻璃模式下把卡片色换成半透明，背景交给 GlassBackdrop 画。 */
 private fun glassScheme(base: androidx.compose.material3.ColorScheme, dark: Boolean) = base.copy(
@@ -404,9 +453,7 @@ private fun GlassBottomBar(selected: Tab, onSelect: (Tab) -> Unit, onAdd: () -> 
     ) {
         Row(
             Modifier.weight(1f).height(64.dp)
-                .clip(RoundedCornerShape(50))
-                .background(pill)
-                .border(1.dp, edge, RoundedCornerShape(50))
+                .glass(RoundedCornerShape(50), tint = pill.copy(alpha = if (dark) 0.35f else 0.45f))
                 .padding(5.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
@@ -478,6 +525,8 @@ private fun LocalFirstApp(db: AppDatabase) {
     var paletteId by remember { mutableStateOf(SettingsStore.getPalette(context)) }
     // 磨砂玻璃主题：默认开，可在「我的 - 外观」里关
     var glassOn by remember { mutableStateOf(SettingsStore.isGlassEnabled(context)) }
+    // 自定义背景图：玻璃模式下铺在最底层
+    var bgPath by remember { mutableStateOf(SettingsStore.getBackground(context)) }
     // 首页头像旁的名字：本地存一份，点头像可改
     var nickname by remember { mutableStateOf(SettingsStore.getNickname(context)) }
     // 头像图片：本机文件路径，空就走默认简笔头像
@@ -497,6 +546,22 @@ private fun LocalFirstApp(db: AppDatabase) {
                     avatarPath = path
                     SettingsStore.setAvatar(context, path)
                     message = "头像已经换好了"
+                }
+            }
+        }
+    }
+    val bgLauncher = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
+        if (uri != null) {
+            scope.launch {
+                val path = withContext(Dispatchers.IO) {
+                    copyUriToInternal(context, uri, "bg_${System.currentTimeMillis()}.jpg")
+                }
+                if (path != null) {
+                    bgPath?.let { old -> withContext(Dispatchers.IO) { File(old).delete() } }
+                    bgPath = path
+                    SettingsStore.setBackground(context, path)
+                    if (!glassOn) { glassOn = true; SettingsStore.setGlassEnabled(context, true) }
+                    message = "背景已经换好了"
                 }
             }
         }
@@ -528,11 +593,17 @@ private fun LocalFirstApp(db: AppDatabase) {
 
     val baseScheme = paletteFor(paletteId, useDarkTheme)
     MaterialTheme(colorScheme = if (glassOn) glassScheme(baseScheme, useDarkTheme) else baseScheme) {
-        CompositionLocalProvider(LocalGlass provides glassOn) {
+        val layerBackdrop = rememberLayerBackdrop()
+        CompositionLocalProvider(
+            LocalGlass provides glassOn,
+            LocalBackdrop provides (if (glassOn) layerBackdrop else null),
+            LocalBgPath provides bgPath
+        ) {
         Box(Modifier.fillMaxSize()) {
-        if (glassOn) GlassBackdrop(useDarkTheme)
+        if (glassOn) GlassBackground(useDarkTheme, Modifier.layerBackdrop(layerBackdrop))
         Scaffold(
             containerColor = if (glassOn) Color.Transparent else MaterialTheme.colorScheme.background,
+            contentColor = MaterialTheme.colorScheme.onBackground,
             snackbarHost = { SnackbarHost(snackbarHostState) },
             bottomBar = {
                 if (glassOn) {
@@ -629,6 +700,14 @@ private fun LocalFirstApp(db: AppDatabase) {
                         onGlassChange = { on ->
                             glassOn = on
                             SettingsStore.setGlassEnabled(context, on)
+                        },
+                        hasCustomBg = bgPath != null,
+                        onPickBg = { bgLauncher.launch("image/*") },
+                        onResetBg = {
+                            bgPath?.let { File(it).delete() }
+                            bgPath = null
+                            SettingsStore.setBackground(context, null)
+                            message = "已恢复默认背景"
                         },
                         nickname = nickname,
                         avatarPath = avatarPath,
@@ -1019,7 +1098,7 @@ private fun TimelineRecord(record: RecordEntry, onClick: () -> Unit, onLongPress
         Spacer(Modifier.width(10.dp))
         Column(Modifier.weight(1f).padding(bottom = 10.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             when (record.kind) {
-                "expense" -> ExpenseLine(record)
+                "expense" -> ExpenseLine(record, onImageClick)
                 "study" -> StudyLine(record)
                 else -> {
                     if (record.text.isNotBlank()) {
@@ -1112,34 +1191,50 @@ private fun ZoomableImage(path: String, onTap: () -> Unit) {
     }
 }
 
-/** 记账：白色圆角小卡，左「备注 · 分类」，右大字号金额。 */
+/**
+ * 记账：
+ * - 带图：不套框。先文字，再图片，图片下面一条玻璃胶囊放「分类 + 金额」，不挡图。
+ * - 不带图：一条玻璃小卡，左「备注 · 分类」，右大字号金额。
+ */
 @Composable
-private fun ExpenseLine(record: RecordEntry) {
+private fun ExpenseLine(record: RecordEntry, onImageClick: (Int) -> Unit = {}) {
     val isIncome = record.moneyKind == "income"
-    Surface(
-        color = MaterialTheme.colorScheme.surface,
-        shape = RoundedCornerShape(16.dp),
-        modifier = Modifier.fillMaxWidth()
-    ) {
-        Row(
-            modifier = Modifier.padding(horizontal = 16.dp, vertical = 16.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Text(
-                listOf(record.text, record.category).filter { it.isNullOrBlank().not() }.joinToString(" · "),
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.SemiBold,
-                maxLines = 2,
-                modifier = Modifier.weight(1f)
-            )
-            Spacer(Modifier.width(10.dp))
-            Text(
-                (if (isIncome) "+" else "-") + formatMoney(record.amountCents ?: 0L),
-                style = MaterialTheme.typography.titleLarge,
-                fontWeight = FontWeight.Bold,
-                color = if (isIncome) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.secondary
-            )
+    val amountText = (if (isIncome) "+" else "-") + formatMoney(record.amountCents ?: 0L)
+    val amountColor = if (isIncome) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.secondary
+    val images = record.images()
+    if (images.isNotEmpty()) {
+        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            if (record.text.isNotBlank()) {
+                Text(record.text, style = MaterialTheme.typography.bodyLarge, lineHeight = MaterialTheme.typography.bodyLarge.fontSize * 1.45f)
+            }
+            RecordImages(images, onImageClick = onImageClick)
+            Row(
+                Modifier.fillMaxWidth().glass(RoundedCornerShape(50)).padding(start = 8.dp, end = 16.dp, top = 6.dp, bottom = 6.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                val cat = record.category?.takeIf { it.isNotBlank() } ?: if (isIncome) "收入" else "其他"
+                Surface(color = amountColor.copy(alpha = 0.18f), shape = RoundedCornerShape(50)) {
+                    Text(cat, style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.SemiBold, color = amountColor, modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp))
+                }
+                Spacer(Modifier.weight(1f))
+                Text(amountText, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold, color = amountColor)
+            }
         }
+        return
+    }
+    Row(
+        modifier = Modifier.fillMaxWidth().glass(RoundedCornerShape(16.dp)).padding(horizontal = 16.dp, vertical = 16.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(
+            listOf(record.text, record.category).filter { it.isNullOrBlank().not() }.joinToString(" · "),
+            style = MaterialTheme.typography.titleMedium,
+            fontWeight = FontWeight.SemiBold,
+            maxLines = 2,
+            modifier = Modifier.weight(1f)
+        )
+        Spacer(Modifier.width(10.dp))
+        Text(amountText, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold, color = amountColor)
     }
 }
 
@@ -1288,7 +1383,7 @@ private fun AddRecordScreen(
     }
 
     val glass = LocalGlass.current
-    if (glass) GlassBackdrop(MaterialTheme.colorScheme.background.red < 0.5f)
+    if (glass) GlassBackground(MaterialTheme.colorScheme.background.red < 0.5f)
     Surface(modifier = Modifier.fillMaxSize(), color = if (glass) Color.Transparent else MaterialTheme.colorScheme.background) {
         Column(Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding()) {
             // 顶栏：取消 / 标题 / 主色胶囊发布
@@ -2099,6 +2194,9 @@ private fun DataScreen(
     onPaletteChange: (String) -> Unit,
     glassOn: Boolean,
     onGlassChange: (Boolean) -> Unit,
+    hasCustomBg: Boolean,
+    onPickBg: () -> Unit,
+    onResetBg: () -> Unit,
     nickname: String,
     avatarPath: String?,
     onRename: () -> Unit,
@@ -2296,6 +2394,15 @@ private fun DataScreen(
                             Text("渐变背景 + 半透明卡片和底栏", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
                         Switch(checked = glassOn, onCheckedChange = onGlassChange)
+                    }
+                    Spacer(Modifier.height(12.dp))
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f)) {
+                            Text("自定义背景", fontWeight = FontWeight.SemiBold)
+                            Text(if (hasCustomBg) "正在用你选的图" else "默认渐变；选一张自己的图（会打开磨砂玻璃）", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                        if (hasCustomBg) TextButton(onClick = onResetBg) { Text("恢复默认") }
+                        TextButton(onClick = onPickBg) { Text("换图片") }
                     }
                     Spacer(Modifier.height(16.dp))
                     Text("主题颜色", fontWeight = FontWeight.SemiBold)
