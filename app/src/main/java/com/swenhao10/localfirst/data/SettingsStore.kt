@@ -83,6 +83,14 @@ object SettingsStore {
         prefs(context).edit().putString(KEY_PALETTE, id).apply()
     }
 
+    /** 早期版本自动塞的两张示例卡是否已经清掉（只清一次）。 */
+    fun isSeedCardsCleaned(context: Context): Boolean =
+        prefs(context).getBoolean("seed_cards_cleaned", false)
+
+    fun setSeedCardsCleaned(context: Context) {
+        prefs(context).edit().putBoolean("seed_cards_cleaned", true).apply()
+    }
+
     /** 首页头像旁的名字，默认「同学」。 */
     fun getNickname(context: Context): String =
         prefs(context).getString(KEY_NICKNAME, DEFAULT_NICKNAME) ?: DEFAULT_NICKNAME

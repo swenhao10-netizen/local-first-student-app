@@ -45,7 +45,7 @@ data class UnknownWord(
     val addedAt: Long = System.currentTimeMillis()
 )
 
-@Dao interface CardDao { @Query("SELECT * FROM cards ORDER BY id DESC") fun observeAll(): Flow<List<VocabularyCard>>; @Query("SELECT COUNT(*) FROM cards") suspend fun count(): Int; @Query("SELECT * FROM cards ORDER BY id ASC") suspend fun all(): List<VocabularyCard>; @Insert suspend fun insert(card: VocabularyCard) }
+@Dao interface CardDao { @Query("SELECT * FROM cards ORDER BY id DESC") fun observeAll(): Flow<List<VocabularyCard>>; @Query("SELECT COUNT(*) FROM cards") suspend fun count(): Int; @Query("SELECT * FROM cards ORDER BY id ASC") suspend fun all(): List<VocabularyCard>; @Insert suspend fun insert(card: VocabularyCard); @Query("DELETE FROM cards WHERE id = :id") suspend fun delete(id: Long); @Query("DELETE FROM cards WHERE front = :front AND back = :back") suspend fun deleteExact(front: String, back: String) }
 @Dao interface HabitDao { @Query("SELECT * FROM habits ORDER BY id DESC") fun observeAll(): Flow<List<HabitEntry>>; @Query("SELECT * FROM habits ORDER BY id ASC") suspend fun all(): List<HabitEntry>; @Insert suspend fun insert(entry: HabitEntry) }
 @Dao interface ExpenseDao { @Query("SELECT * FROM expenses ORDER BY id DESC") fun observeAll(): Flow<List<ExpenseEntry>>; @Query("SELECT * FROM expenses ORDER BY id ASC") suspend fun all(): List<ExpenseEntry>; @Insert suspend fun insert(entry: ExpenseEntry) }
 @Dao interface RecordDao {
