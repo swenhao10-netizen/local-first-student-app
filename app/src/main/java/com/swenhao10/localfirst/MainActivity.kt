@@ -457,8 +457,12 @@ private fun GlassBottomBar(selected: Tab, onSelect: (Tab) -> Unit, onAdd: () -> 
         Modifier.fillMaxWidth().navigationBarsPadding().padding(start = 16.dp, end = 16.dp, bottom = 10.dp, top = 6.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
+        // 必须传一个「读 State 的稳定 lambda」：组件内部靠 snapshotFlow 观察它，
+        // 直接写 { tabs.indexOf(selected) } 每次重组都是新对象且读的是快照值，点 Tab 时选中块不会跟着走
+        val selectedIndexState = androidx.compose.runtime.rememberUpdatedState(tabs.indexOf(selected))
+        val selectedIndex = remember { { selectedIndexState.value } }
         LiquidBottomTabs(
-            selectedTabIndex = { tabs.indexOf(selected) },
+            selectedTabIndex = selectedIndex,
             onTabSelected = { onSelect(tabs[it]) },
             backdrop = backdrop,
             tabsCount = tabs.size,

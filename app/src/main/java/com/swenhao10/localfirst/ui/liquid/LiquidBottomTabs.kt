@@ -72,6 +72,8 @@ fun LiquidBottomTabs(
         else Color(0xFF121212).copy(0.4f)
 
     val tabsBackdrop = rememberLayerBackdrop()
+    // 用最新的回调，避免 LaunchedEffect 里拿到旧的 lambda
+    val latestOnTabSelected by androidx.compose.runtime.rememberUpdatedState(onTabSelected)
 
     BoxWithConstraints(
         modifier,
@@ -139,7 +141,7 @@ fun LiquidBottomTabs(
                 .drop(1)
                 .collectLatest { index ->
                     dampedDragAnimation.animateToValue(index.toFloat())
-                    onTabSelected(index)
+                    latestOnTabSelected(index)
                 }
         }
 
