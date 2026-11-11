@@ -2294,7 +2294,7 @@ private fun DataScreen(
         runCatching {
             @Suppress("DEPRECATION")
             context.packageManager.getPackageInfo(context.packageName, 0).versionName
-        }.getOrNull() ?: "0.3.0"
+        }.getOrNull() ?: "0.4.0"
     }
 
     fun timeText() = "%02d:%02d".format(reminderHour, reminderMinute)
