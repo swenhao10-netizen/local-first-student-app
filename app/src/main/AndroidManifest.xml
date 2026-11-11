@@ -3,6 +3,8 @@
     <uses-permission android:name="android.permission.CAMERA" />
     <!-- 每日提醒用（Android 13+ 运行时申请，拒绝则提醒不开）。 -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- 把记录里的照片/视频存回相册：Android 10 起不需要权限，9 及以下才用到。 -->
+    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="28" />
     <uses-feature android:name="android.hardware.camera" android:required="false" />
     <application android:theme="@style/Theme.LocalFirst" android:label="知行" android:icon="@mipmap/ic_launcher" android:roundIcon="@mipmap/ic_launcher" android:allowBackup="false" android:supportsRtl="true">
         <activity android:name=".MainActivity" android:exported="true">
