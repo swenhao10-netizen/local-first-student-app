@@ -48,4 +48,5 @@ dependencies {
     implementation("androidx.work:work-runtime-ktx:2.9.0")
     // 液态玻璃 / 背景模糊：github.com/Kyant0/AndroidLiquidGlass（Apache-2.0）。模糊要 Android 12+，透镜折射要 13+，更老的系统自动退回半透明
     implementation("io.github.kyant0:backdrop:1.0.0")
+    implementation("io.github.kyant0:capsule:2.1.1")
 }

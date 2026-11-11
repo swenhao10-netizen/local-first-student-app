@@ -113,6 +113,9 @@ import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import com.kyant.backdrop.drawBackdrop
+import com.swenhao10.localfirst.ui.liquid.LiquidBottomTab
+import com.swenhao10.localfirst.ui.liquid.LiquidBottomTabs
+import com.swenhao10.localfirst.ui.liquid.LiquidButton
 import com.kyant.backdrop.backdrops.LayerBackdrop
 import com.kyant.backdrop.backdrops.layerBackdrop
 import com.kyant.backdrop.backdrops.rememberLayerBackdrop
@@ -441,50 +444,69 @@ private fun GlassBackdrop(dark: Boolean, modifier: Modifier = Modifier) {
     }
 }
 
-/** 玻璃底栏：左边一颗胶囊放四个 Tab，右边一个圆形「+」。 */
+/**
+ * 玻璃底栏：液态玻璃 Tab（按住能拖，选中块像水珠一样滑过去）+ 右边液态玻璃「+」。
+ * 没开玻璃时不会走到这里。
+ */
 @Composable
 private fun GlassBottomBar(selected: Tab, onSelect: (Tab) -> Unit, onAdd: () -> Unit) {
     val dark = MaterialTheme.colorScheme.background.red < 0.5f
-    val pill = if (dark) Color(0xCC1E2A28) else Color(0xD9FFFFFF)
-    val edge = if (dark) Color(0x33FFFFFF) else Color(0xB3FFFFFF)
+    val backdrop = LocalBackdrop.current ?: return
+    val tabs = Tab.values()
     Row(
         Modifier.fillMaxWidth().navigationBarsPadding().padding(start = 16.dp, end = 16.dp, bottom = 10.dp, top = 6.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Row(
-            Modifier.weight(1f).height(64.dp)
-                .glass(RoundedCornerShape(50), tint = pill.copy(alpha = if (dark) 0.35f else 0.45f))
-                .padding(5.dp),
-            verticalAlignment = Alignment.CenterVertically
+        LiquidBottomTabs(
+            selectedTabIndex = { tabs.indexOf(selected) },
+            onTabSelected = { onSelect(tabs[it]) },
+            backdrop = backdrop,
+            tabsCount = tabs.size,
+            modifier = Modifier.weight(1f),
+            accentColor = MaterialTheme.colorScheme.primary,
+            isLightTheme = !dark
         ) {
-            Tab.values().forEach { item ->
-                val on = item == selected
-                Column(
-                    Modifier.weight(1f).fillMaxHeight()
-                        .clip(RoundedCornerShape(50))
-                        .background(if (on) (if (dark) Color(0x33FFFFFF) else Color.White) else Color.Transparent)
-                        .clickable { onSelect(item) },
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.Center
-                ) {
-                    Icon(
-                        iconFor(item), contentDescription = item.label, modifier = Modifier.size(22.dp),
-                        tint = if (on) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                    Text(
-                        item.label, fontSize = 11.sp,
-                        fontWeight = if (on) FontWeight.Bold else FontWeight.Normal,
-                        color = if (on) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
-                    )
+            tabs.forEach { item ->
+                LiquidBottomTab(onClick = { onSelect(item) }) {
+                    Icon(iconFor(item), contentDescription = item.label, modifier = Modifier.size(22.dp), tint = MaterialTheme.colorScheme.onSurface)
+                    Text(item.label, fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurface)
                 }
             }
         }
         Spacer(Modifier.width(12.dp))
-        Surface(onClick = onAdd, shape = CircleShape, color = MaterialTheme.colorScheme.primary, shadowElevation = 6.dp, modifier = Modifier.size(62.dp)) {
-            Box(contentAlignment = Alignment.Center) {
-                Icon(Icons.Default.Add, contentDescription = "发记录", tint = MaterialTheme.colorScheme.onPrimary, modifier = Modifier.size(30.dp))
-            }
+        LiquidButton(
+            onClick = onAdd,
+            backdrop = backdrop,
+            tint = MaterialTheme.colorScheme.primary,
+            modifier = Modifier.size(64.dp)
+        ) {
+            Icon(Icons.Default.Add, contentDescription = "发记录", tint = Color.White, modifier = Modifier.size(30.dp))
         }
+    }
+}
+
+/** 液态玻璃按钮；没开玻璃时退回普通按钮样式。tint 为空 = 无色玻璃。 */
+@Composable
+private fun GlassButton(
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    tint: Color? = null,
+    enabled: Boolean = true,
+    content: @Composable androidx.compose.foundation.layout.RowScope.() -> Unit
+) {
+    val backdrop = LocalBackdrop.current
+    if (backdrop != null) {
+        LiquidButton(
+            onClick = { if (enabled) onClick() },
+            backdrop = backdrop,
+            tint = tint ?: Color.Unspecified,
+            modifier = modifier.graphicsLayer { alpha = if (enabled) 1f else 0.45f },
+            content = content
+        )
+    } else if (tint != null) {
+        Button(onClick = onClick, enabled = enabled, modifier = modifier, shape = RoundedCornerShape(50), colors = ButtonDefaults.buttonColors(containerColor = tint)) { content() }
+    } else {
+        OutlinedButton(onClick = onClick, enabled = enabled, modifier = modifier, shape = RoundedCornerShape(50)) { content() }
     }
 }
 
@@ -862,7 +884,11 @@ private fun RecordScreen(
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
-                IconButton(
+                if (LocalBackdrop.current != null) {
+                    GlassButton(onClick = onSearch, modifier = Modifier.size(46.dp)) {
+                        Icon(Icons.Default.Search, contentDescription = "搜索", tint = MaterialTheme.colorScheme.onSurface)
+                    }
+                } else IconButton(
                     onClick = onSearch,
                     modifier = Modifier.size(42.dp).background(MaterialTheme.colorScheme.surface, CircleShape)
                 ) { Icon(Icons.Default.Search, contentDescription = "搜索", tint = MaterialTheme.colorScheme.onSurface) }
@@ -1397,7 +1423,21 @@ private fun AddRecordScreen(
                     fontWeight = FontWeight.Bold,
                     modifier = Modifier.align(Alignment.Center)
                 )
-                Button(
+                if (LocalBackdrop.current != null) {
+                    GlassButton(
+                        onClick = {
+                            onPublish(
+                                text.trim(), newUris.toList(), keptPaths.toList(),
+                                if (recordMoney) amountCents else null,
+                                if (recordMoney) category else null,
+                                if (recordMoney) moneyKind else null
+                            )
+                        },
+                        enabled = canPublish,
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.align(Alignment.CenterEnd)
+                    ) { Text(if (editing == null) "发布" else "保存", fontWeight = FontWeight.SemiBold, color = Color.White) }
+                } else Button(
                     onClick = {
                         onPublish(
                             text.trim(), newUris.toList(), keptPaths.toList(),
@@ -1817,7 +1857,42 @@ private fun WordsScreen(
             }
             Spacer(Modifier.weight(1f))
             // 没作答：不认识（描边）/ 认识（实心）；作答后显示意思，按钮换成「下一个」
-            if (!study.showMeaning) {
+            if (LocalBackdrop.current != null) {
+                if (!study.showMeaning) {
+                    Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                        GlassButton(
+                            onClick = {
+                                study.unknown += 1
+                                study.showMeaning = true
+                                saveProgress()
+                                scope.launch {
+                                    withContext(Dispatchers.IO) {
+                                        if (unknownDao.countByHeadword(word.headword) == 0) {
+                                            unknownDao.insert(UnknownWord(headword = word.headword, phonetic = word.phonetic, meaning = word.meaning))
+                                        }
+                                    }
+                                }
+                            },
+                            modifier = Modifier.weight(1f).height(54.dp)
+                        ) { Text("不认识", fontWeight = FontWeight.SemiBold, color = warnColor) }
+                        GlassButton(
+                            onClick = {
+                                study.known += 1
+                                study.showMeaning = true
+                                saveProgress()
+                            },
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.weight(1f).height(54.dp)
+                        ) { Text("认识", fontWeight = FontWeight.SemiBold, color = Color.White) }
+                    }
+                } else {
+                    GlassButton(
+                        onClick = { nextWord() },
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.fillMaxWidth().height(54.dp)
+                    ) { Text(if (index + 1 >= total) "完成" else "下一个", fontWeight = FontWeight.SemiBold, color = Color.White) }
+                }
+            } else if (!study.showMeaning) {
                 Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                     OutlinedButton(
                         onClick = {
