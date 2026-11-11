@@ -4,7 +4,7 @@
     <!-- 每日提醒用（Android 13+ 运行时申请，拒绝则提醒不开）。 -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-feature android:name="android.hardware.camera" android:required="false" />
-    <application android:theme="@style/Theme.LocalFirst" android:label="知行" android:icon="@drawable/ic_launcher" android:roundIcon="@drawable/ic_launcher" android:allowBackup="false" android:supportsRtl="true">
+    <application android:theme="@style/Theme.LocalFirst" android:label="知行" android:icon="@mipmap/ic_launcher" android:roundIcon="@mipmap/ic_launcher" android:allowBackup="false" android:supportsRtl="true">
         <activity android:name=".MainActivity" android:exported="true">
             <intent-filter><action android:name="android.intent.action.MAIN" /><category android:name="android.intent.category.LAUNCHER" /></intent-filter>
         </activity>

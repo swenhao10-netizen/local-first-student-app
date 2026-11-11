@@ -1,7 +1,10 @@
 name: build-apk
 on:
-  pull_request:
+  push:
+    branches-ignore: [main]
   workflow_dispatch:
+permissions:
+  contents: write
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -17,3 +20,12 @@ jobs:
         with:
           name: zhixing-debug-apk
           path: app/build/outputs/apk/debug/*.apk
+      # 每个分支一个预览版 Release，手机浏览器直接下 APK（覆盖上一次）
+      - name: 发布预览 APK
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="preview-${GITHUB_REF_NAME//\//-}"
+          cp app/build/outputs/apk/debug/app-debug.apk zhixing-preview.apk
+          gh release delete "$TAG" --yes --cleanup-tag || true
+          gh release create "$TAG" zhixing-preview.apk --prerelease --target "$GITHUB_SHA" --title "预览版 $GITHUB_REF_NAME" --notes "分支 $GITHUB_REF_NAME 自动打包的测试版，提交 $GITHUB_SHA"
