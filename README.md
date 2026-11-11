@@ -1,29 +1,68 @@
 # 知行
 
-当前由项目负责人直接统筹产品、设计与 Android 实现，外部协作者的文档仅作为参考输入。
+**记下今天的每一件小事。**
 
-知行是一款 Android 本地优先 App，首版包含三个模块：背单词 / 学习卡片、习惯·专注、轻量记账。
+知行是一款本地优先的 Android 学生 App：把随手记、背单词、记账放进同一条个人时间轴。免费、不用注册、离线可用，所有数据只存在你自己的手机里。
 
-## 当前实现
+👉 [下载最新版 APK](https://github.com/swenhao10-netizen/zhixing/releases/latest)（Android 8.0 及以上，覆盖安装不丢数据）
 
-- Kotlin + Jetpack Compose + Room
-- 无账号，本地 SQLite 数据库
-- 三个模块的最小记录闭环
-- Material 3 视觉系统：青绿色主色、卡片分组、底部导航和轻量动效
-- “我的数据”支持 JSON 导入、导出和备份提示
-- 写入操作放在后台线程，避免点击保存时卡顿
-- 自定义“知行”书本 + 向上箭头 App 图标
-- 内置词库内容只使用原创示例；考试词库需要单独核验授权
+## 功能
 
-## 开发状态
+**记录（首页时间轴）**
+- 想到就发一条：文字（最多 500 字）、配图（相册或拍照），点图片可全屏查看
+- 打开「记一笔账」，同一条记录里填分类和金额
+- 背单词会自动在时间轴记一条
 
-当前是 Android 内部测试版。复习排期、考试词库授权、完整冲突处理、提醒和正式签名发布仍需继续实现。请阅读 `项目总览与决策清单.md` 与 `词库内容方案-首版任务.md`。
+**单词**
+- 内置大学英语四六级词汇 5805 个（ECDICT），一词一卡
+- 先想再看：点「认识 / 不认识」后才显示释义，可继续上次进度或从头开始
+- 「不认识」的词自动收进「不记得的单词」单独复习
+- 「我的卡片」：自己加的词，可删除
 
-## UI 参考
+**总览**
+- 本月结余、收入、支出
+- 学习天数、记录条数、背过的单词数
+- 按分类的支出统计，月历标出有记录的日子
 
-视觉和交互采用 Jetpack Compose Material 3 的成熟模式，参考了 Android 官方的 [Now in Android](https://github.com/android/nowinandroid) 与 [Compose Samples](https://github.com/android/compose-samples)，并按“知行”的本地优先定位重新组合。
+**我的**
+- 头像、昵称（只用本机图片）
+- 主题颜色、液态玻璃主题、自定义背景
+- 背单词 / 记账每日提醒
+- 导出本地备份、从备份恢复
 
-## GitHub
+## 隐私
 
-https://github.com/swenhao10-netizen/local-first-student-app
+- 记录、单词、账目都只保存在这台手机，不上传
+- 不需要账号，没有广告、订阅、内购、排行榜，不做默认数据收集
+- 卸载 App 会删除本机数据，换机或卸载前请先导出备份
 
+## 技术栈
+
+Kotlin 2.2 · Jetpack Compose（Material 3）· Room · WorkManager · minSdk 26 / compileSdk 36
+
+液态玻璃效果使用 [Kyant0/AndroidLiquidGlass](https://github.com/Kyant0/AndroidLiquidGlass)（backdrop 1.0.0，Apache 2.0），底栏与按钮组件移植自其示例，见 `app/src/main/java/com/swenhao10/localfirst/ui/liquid/`。模糊需 Android 12+，折射需 Android 13+，低版本自动退化为半透明。
+
+## 构建
+
+```bash
+./gradlew assembleDebug
+```
+
+需要 JDK 21。推送任意分支，GitHub Actions 会自动打包并发布预览版；推送 `v*` 标签会发布正式版（更新说明放在 `release-notes/<标签>.md`）。
+
+APK 使用仓库内固定的 debug 签名（`keystore/zhixing-debug.jks`），保证每次打包都能覆盖安装。
+
+## 目录
+
+```
+app/                     Android 应用
+  src/main/assets/packs/ 内置词包（SQLite）
+packs/cet46/             词包来源与许可证说明
+release-notes/           各版本更新说明
+keystore/                debug 签名
+```
+
+## 致谢
+
+- 词库：[ECDICT](https://github.com/skywind3000/ECDICT)（MIT）
+- 液态玻璃：[AndroidLiquidGlass](https://github.com/Kyant0/AndroidLiquidGlass)（Apache 2.0）

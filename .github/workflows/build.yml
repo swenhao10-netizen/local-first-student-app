@@ -1,7 +1,7 @@
 name: build-apk
 on:
   push:
-    branches-ignore: [main]
+    branches: ['**']
     tags: ['v*']
   workflow_dispatch:
 permissions:

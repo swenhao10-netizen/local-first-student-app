@@ -3,6 +3,8 @@ pack_id: org.zhixing.cet46
 version: 2026.11.10
 released: 2026-11-10
 
+数据库文件在 app/src/main/assets/packs/pack.db（打包进 APK）。
+
 来源：ECDICT (https://github.com/skywind3000/ECDICT)，MIT License，Copyright (c) 2025 Linwei。
 
 做法：
