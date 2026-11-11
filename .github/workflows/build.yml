@@ -2,6 +2,7 @@ name: build-apk
 on:
   push:
     branches-ignore: [main]
+    tags: ['v*']
   workflow_dispatch:
 permissions:
   contents: write
@@ -22,6 +23,7 @@ jobs:
           path: app/build/outputs/apk/debug/*.apk
       # 每个分支一个预览版 Release，手机浏览器直接下 APK（覆盖上一次）
       - name: 发布预览 APK
+        if: github.ref_type == 'branch'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -29,3 +31,13 @@ jobs:
           cp app/build/outputs/apk/debug/app-debug.apk zhixing-preview.apk
           gh release delete "$TAG" --yes --cleanup-tag || true
           gh release create "$TAG" zhixing-preview.apk --prerelease --target "$GITHUB_SHA" --title "预览版 $GITHUB_REF_NAME" --notes "分支 $GITHUB_REF_NAME 自动打包的测试版，提交 $GITHUB_SHA"
+      # 推 v* 标签 = 正式发行版（设为最新发行版），说明取 release-notes/<标签>.md
+      - name: 发布正式版 APK
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cp app/build/outputs/apk/debug/app-debug.apk "zhixing-${GITHUB_REF_NAME}.apk"
+          NOTES="release-notes/${GITHUB_REF_NAME}.md"
+          [ -f "$NOTES" ] || echo "知行 ${GITHUB_REF_NAME}" > "$NOTES"
+          gh release create "$GITHUB_REF_NAME" "zhixing-${GITHUB_REF_NAME}.apk" --title "$GITHUB_REF_NAME" --notes-file "$NOTES" --latest
