@@ -2,6 +2,8 @@
 <paths>
     <!-- 拍照的临时文件放 cache -->
     <cache-path name="photos" path="photos/" />
+    <!-- 「导出给 AI」生成的文字档 -->
+    <cache-path name="export" path="export/" />
     <!-- 发记录时保存的图片放内部存储 -->
     <files-path name="records" path="records/" />
 </paths>

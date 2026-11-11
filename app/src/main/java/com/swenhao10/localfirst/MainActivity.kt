@@ -183,6 +183,10 @@ import com.swenhao10.localfirst.data.videoDurationMs
 import com.swenhao10.localfirst.data.formatDuration
 import com.swenhao10.localfirst.data.saveToGallery
 import com.swenhao10.localfirst.data.galleryNeedsPermission
+import com.swenhao10.localfirst.data.AiExport
+import android.content.Intent
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.widget.Toast
 import android.widget.VideoView
 import androidx.compose.ui.viewinterop.AndroidView
@@ -2507,6 +2511,50 @@ private fun DataScreen(
     var reminderMinute by remember { mutableStateOf(initialMinute) }
     var pendingKind by remember { mutableStateOf<String?>(null) }
     val saveAllMedia = rememberGallerySaver()
+    var showAiExport by remember { mutableStateOf(false) }
+    fun exportForAi(days: Int?) {
+        scope.launch {
+            val result = runCatching {
+                val text = withContext(Dispatchers.IO) { AiExport.build(db.records().all(), nickname, days) }
+                val dir = File(context.cacheDir, "export").apply { mkdirs() }
+                val file = File(dir, "知行_生活记录.md")
+                withContext(Dispatchers.IO) { file.writeText(text) }
+                // 不太长就顺手复制，粘贴进任何 AI 对话框都行
+                if (text.length <= 100_000) {
+                    val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                    cm.setPrimaryClip(ClipData.newPlainText("知行生活记录", text))
+                }
+                val uri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
+                val send = Intent(Intent.ACTION_SEND).apply {
+                    type = "text/plain"
+                    putExtra(Intent.EXTRA_STREAM, uri)
+                    putExtra(Intent.EXTRA_SUBJECT, "我的生活记录（知行导出）")
+                    clipData = ClipData.newRawUri("知行生活记录", uri)
+                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                }
+                context.startActivity(Intent.createChooser(send, "发给 AI").addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+                text.length <= 100_000
+            }
+            onMessage(result.fold({ copied -> if (copied) "已复制，也可以直接分享给 AI App" else "记录太多没法复制，用分享发文件吧" }, { "导出失败：${it.message ?: "未知错误"}" }))
+        }
+    }
+    if (showAiExport) {
+        AlertDialog(
+            onDismissRequest = { showAiExport = false },
+            title = { Text("导出给 AI") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("把记录整理成一份文字，开头带给 AI 的说明。发给任意 AI，它读完就能大致了解你。")
+                    Text("只导出文字、账目和背词情况，照片视频只写数量。导出后由你自己决定发给谁。", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    listOf(7 to "最近 7 天", 30 to "最近 30 天", null to "全部记录").forEach { (d, label) ->
+                        OutlinedButton(onClick = { showAiExport = false; exportForAi(d) }, modifier = Modifier.fillMaxWidth()) { Text(label) }
+                    }
+                }
+            },
+            confirmButton = {},
+            dismissButton = { TextButton(onClick = { showAiExport = false }) { Text("取消") } }
+        )
+    }
     val versionName = remember {
         runCatching {
             @Suppress("DEPRECATION")
@@ -2730,6 +2778,7 @@ private fun DataScreen(
                 },
                 modifier = Modifier.fillMaxWidth()
             ) { Text("照片和视频全部存到相册") }
+            OutlinedButton(onClick = { showAiExport = true }, modifier = Modifier.fillMaxWidth()) { Text("导出给 AI，让它了解我") }
             Text(
                 "记录里的照片和视频都另存了一份在知行里，相册里删了也不影响。卸载或换机前点上面这个，会存一份到相册「知行」。",
                 style = MaterialTheme.typography.bodySmall,
