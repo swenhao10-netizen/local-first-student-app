@@ -111,6 +111,11 @@ import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.staticCompositionLocalOf
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.foundation.border
+import androidx.compose.foundation.layout.offset
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -353,6 +358,99 @@ private fun paletteFor(id: String, dark: Boolean): androidx.compose.material3.Co
     return if (dark) set.dark else set.light
 }
 
+/** 磨砂玻璃主题开关：开着时背景是柔和渐变，卡片、底栏都是半透明的“玻璃”。 */
+private val LocalGlass = staticCompositionLocalOf { false }
+
+/** 玻璃模式下把卡片色换成半透明，背景交给 GlassBackdrop 画。 */
+private fun glassScheme(base: androidx.compose.material3.ColorScheme, dark: Boolean) = base.copy(
+    surface = if (dark) Color(0x9922302E) else Color(0xA6FFFFFF),
+    surfaceVariant = if (dark) Color(0x80314341) else Color(0x99FFFFFF),
+    surfaceContainerHigh = if (dark) Color(0xFF1E2A28) else Color(0xFFF8FBFA),
+    background = if (dark) Color(0xFF0F1716) else Color(0xFFEEF4F1)
+)
+
+/** 玻璃背景：底色 + 三团大色块（主色、淡紫、暖桃），像透过毛玻璃看到的颜色。 */
+@Composable
+private fun GlassBackdrop(dark: Boolean, modifier: Modifier = Modifier) {
+    val primary = MaterialTheme.colorScheme.primary
+    val base = MaterialTheme.colorScheme.background
+    Canvas(modifier.fillMaxSize()) {
+        drawRect(base)
+        val w = size.width; val h = size.height
+        val blobs = if (dark) listOf(
+            Triple(primary.copy(alpha = 0.35f), Offset(w * 0.1f, h * 0.08f), w * 0.9f),
+            Triple(Color(0x66463A8C), Offset(w * 1.0f, h * 0.45f), w * 0.8f),
+            Triple(Color(0x55704A36), Offset(w * 0.3f, h * 1.0f), w * 0.9f)
+        ) else listOf(
+            Triple(primary.copy(alpha = 0.28f), Offset(w * 0.1f, h * 0.06f), w * 0.95f),
+            Triple(Color(0x80D5C8F2), Offset(w * 1.0f, h * 0.45f), w * 0.85f),
+            Triple(Color(0x80F7D8C3), Offset(w * 0.35f, h * 1.0f), w * 0.95f)
+        )
+        blobs.forEach { (c, center, r) ->
+            drawCircle(Brush.radialGradient(listOf(c, c.copy(alpha = 0f)), center = center, radius = r), radius = r, center = center)
+        }
+    }
+}
+
+/** 玻璃底栏：左边一颗胶囊放四个 Tab，右边一个圆形「+」。 */
+@Composable
+private fun GlassBottomBar(selected: Tab, onSelect: (Tab) -> Unit, onAdd: () -> Unit) {
+    val dark = MaterialTheme.colorScheme.background.red < 0.5f
+    val pill = if (dark) Color(0xCC1E2A28) else Color(0xD9FFFFFF)
+    val edge = if (dark) Color(0x33FFFFFF) else Color(0xB3FFFFFF)
+    Row(
+        Modifier.fillMaxWidth().navigationBarsPadding().padding(start = 16.dp, end = 16.dp, bottom = 10.dp, top = 6.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Row(
+            Modifier.weight(1f).height(64.dp)
+                .clip(RoundedCornerShape(50))
+                .background(pill)
+                .border(1.dp, edge, RoundedCornerShape(50))
+                .padding(5.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Tab.values().forEach { item ->
+                val on = item == selected
+                Column(
+                    Modifier.weight(1f).fillMaxHeight()
+                        .clip(RoundedCornerShape(50))
+                        .background(if (on) (if (dark) Color(0x33FFFFFF) else Color.White) else Color.Transparent)
+                        .clickable { onSelect(item) },
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.Center
+                ) {
+                    Icon(
+                        iconFor(item), contentDescription = item.label, modifier = Modifier.size(22.dp),
+                        tint = if (on) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Text(
+                        item.label, fontSize = 11.sp,
+                        fontWeight = if (on) FontWeight.Bold else FontWeight.Normal,
+                        color = if (on) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+        }
+        Spacer(Modifier.width(12.dp))
+        Surface(onClick = onAdd, shape = CircleShape, color = MaterialTheme.colorScheme.primary, shadowElevation = 6.dp, modifier = Modifier.size(62.dp)) {
+            Box(contentAlignment = Alignment.Center) {
+                Icon(Icons.Default.Add, contentDescription = "发记录", tint = MaterialTheme.colorScheme.onPrimary, modifier = Modifier.size(30.dp))
+            }
+        }
+    }
+}
+
+/** 分类配色：只给现有分类上色，其余走灰色。 */
+private fun categoryColor(category: String?, primary: Color): Color = when (category) {
+    "餐饮" -> Color(0xFFE08A2C)
+    "购物" -> Color(0xFFD9536A)
+    "交通" -> Color(0xFF3F7FD9)
+    "娱乐" -> Color(0xFF965AC8)
+    "学习" -> primary
+    else -> Color(0xFF8A9592)
+}
+
 /** 记账分类（默认值，方案待定项） */private val EXPENSE_CATEGORIES = listOf("餐饮", "购物", "交通", "娱乐", "学习", "其他")
 private val INCOME_CATEGORIES = listOf("生活费", "兼职", "其他")
 
@@ -378,6 +476,8 @@ private fun LocalFirstApp(db: AppDatabase) {
     var themeMode by remember { mutableStateOf(SettingsStore.getThemeMode(context)) }
     // 主题颜色：默认青绿（原来的主色），可换海蓝/紫罗兰/暖橙/樱粉
     var paletteId by remember { mutableStateOf(SettingsStore.getPalette(context)) }
+    // 磨砂玻璃主题：默认开，可在「我的 - 外观」里关
+    var glassOn by remember { mutableStateOf(SettingsStore.isGlassEnabled(context)) }
     // 首页头像旁的名字：本地存一份，点头像可改
     var nickname by remember { mutableStateOf(SettingsStore.getNickname(context)) }
     // 头像图片：本机文件路径，空就走默认简笔头像
@@ -426,13 +526,21 @@ private fun LocalFirstApp(db: AppDatabase) {
         }
     }
 
-    MaterialTheme(colorScheme = paletteFor(paletteId, useDarkTheme)) {
+    val baseScheme = paletteFor(paletteId, useDarkTheme)
+    MaterialTheme(colorScheme = if (glassOn) glassScheme(baseScheme, useDarkTheme) else baseScheme) {
+        CompositionLocalProvider(LocalGlass provides glassOn) {
         Box(Modifier.fillMaxSize()) {
+        if (glassOn) GlassBackdrop(useDarkTheme)
         Scaffold(
-            containerColor = MaterialTheme.colorScheme.background,
+            containerColor = if (glassOn) Color.Transparent else MaterialTheme.colorScheme.background,
             snackbarHost = { SnackbarHost(snackbarHostState) },
             bottomBar = {
-                NavigationBar(containerColor = MaterialTheme.colorScheme.surface) {
+                if (glassOn) {
+                    GlassBottomBar(selected = tab, onSelect = { tab = it }, onAdd = {
+                        editingRecord = null
+                        showAddRecord = true
+                    })
+                } else NavigationBar(containerColor = MaterialTheme.colorScheme.surface) {
                     Tab.values().forEach { item ->
                         NavigationBarItem(
                             selected = tab == item,
@@ -516,6 +624,11 @@ private fun LocalFirstApp(db: AppDatabase) {
                         onPaletteChange = { id ->
                             paletteId = id
                             SettingsStore.setPalette(context, id)
+                        },
+                        glassOn = glassOn,
+                        onGlassChange = { on ->
+                            glassOn = on
+                            SettingsStore.setGlassEnabled(context, on)
                         },
                         nickname = nickname,
                         avatarPath = avatarPath,
@@ -613,6 +726,7 @@ private fun LocalFirstApp(db: AppDatabase) {
             )
         }
         }
+        }
     }
 }
 
@@ -673,10 +787,12 @@ private fun RecordScreen(
                     onClick = onSearch,
                     modifier = Modifier.size(42.dp).background(MaterialTheme.colorScheme.surface, CircleShape)
                 ) { Icon(Icons.Default.Search, contentDescription = "搜索", tint = MaterialTheme.colorScheme.onSurface) }
-                Spacer(Modifier.width(10.dp))
-                Surface(onClick = onAddRecord, shape = CircleShape, color = MaterialTheme.colorScheme.primary, modifier = Modifier.size(46.dp)) {
-                    Box(contentAlignment = Alignment.Center) {
-                        Icon(Icons.Default.Add, contentDescription = "发记录", tint = MaterialTheme.colorScheme.onPrimary, modifier = Modifier.size(24.dp))
+                if (!LocalGlass.current) {
+                    Spacer(Modifier.width(10.dp))
+                    Surface(onClick = onAddRecord, shape = CircleShape, color = MaterialTheme.colorScheme.primary, modifier = Modifier.size(46.dp)) {
+                        Box(contentAlignment = Alignment.Center) {
+                            Icon(Icons.Default.Add, contentDescription = "发记录", tint = MaterialTheme.colorScheme.onPrimary, modifier = Modifier.size(24.dp))
+                        }
                     }
                 }
             }
@@ -1171,7 +1287,9 @@ private fun AddRecordScreen(
         }
     }
 
-    Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
+    val glass = LocalGlass.current
+    if (glass) GlassBackdrop(MaterialTheme.colorScheme.background.red < 0.5f)
+    Surface(modifier = Modifier.fillMaxSize(), color = if (glass) Color.Transparent else MaterialTheme.colorScheme.background) {
         Column(Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding()) {
             // 顶栏：取消 / 标题 / 主色胶囊发布
             Box(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp)) {
@@ -1820,8 +1938,15 @@ private fun OverviewScreen(records: List<RecordEntry>, wordCount: Int, modifier:
         }
         item {
             // 本月结余：深色大卡 + 一条收支比例条
-            Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primary), shape = RoundedCornerShape(24.dp)) {
-                Column(Modifier.fillMaxWidth().padding(20.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            val glass = LocalGlass.current
+            val primary = MaterialTheme.colorScheme.primary
+            Card(colors = CardDefaults.cardColors(containerColor = if (glass) Color.Transparent else primary), shape = RoundedCornerShape(24.dp)) {
+                Column(
+                    Modifier.fillMaxWidth()
+                        .then(if (glass) Modifier.background(Brush.linearGradient(listOf(primary, Color(0xFF6A8FC8), Color(0xFF8A72D6)))) else Modifier)
+                        .padding(20.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
                     Text("本月结余", color = Color.White.copy(alpha = .85f), style = MaterialTheme.typography.labelLarge)
                     Text(formatMoney(income - expense), style = MaterialTheme.typography.displaySmall, fontWeight = FontWeight.Bold, color = Color.White)
                     Spacer(Modifier.height(4.dp))
@@ -1846,6 +1971,36 @@ private fun OverviewScreen(records: List<RecordEntry>, wordCount: Int, modifier:
                 StatTile("$studyDays", "学习天数", Modifier.weight(1f))
                 StatTile("${monthRecords.size}", "条记录", Modifier.weight(1f))
                 StatTile("$wordCount", "个单词", Modifier.weight(1f))
+            }
+        }
+        // 这个月花在哪：按分类汇总本月支出，从多到少，没有支出就不显示
+        val byCategory = monthRecords
+            .filter { it.kind == "expense" && it.moneyKind == "expense" && (it.amountCents ?: 0) > 0 }
+            .groupBy { it.category?.takeIf { c -> c.isNotBlank() } ?: "其他" }
+            .mapValues { (_, list) -> list.sumOf { it.amountCents ?: 0L } }
+            .toList().sortedByDescending { it.second }
+        if (byCategory.isNotEmpty()) {
+            item {
+                val maxValue = byCategory.first().second.coerceAtLeast(1L)
+                val primary = MaterialTheme.colorScheme.primary
+                Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface), shape = RoundedCornerShape(20.dp)) {
+                    Column(Modifier.fillMaxWidth().padding(18.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+                        Text("这个月花在哪", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                        byCategory.forEach { (cat, cents) ->
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text(cat, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold, modifier = Modifier.width(44.dp))
+                                Box(Modifier.weight(1f).height(10.dp).clip(RoundedCornerShape(50)).background(MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f))) {
+                                    Box(
+                                        Modifier.fillMaxWidth((cents.toFloat() / maxValue).coerceIn(0.04f, 1f)).fillMaxHeight()
+                                            .clip(RoundedCornerShape(50)).background(categoryColor(cat, primary))
+                                    )
+                                }
+                                Spacer(Modifier.width(10.dp))
+                                Text(formatMoney(cents), style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
+                        }
+                    }
+                }
             }
         }
         item { SectionTitle("每天记了什么", "有记录的日子会标出来") }
@@ -1942,6 +2097,8 @@ private fun DataScreen(
     onThemeChange: (String) -> Unit,
     paletteId: String,
     onPaletteChange: (String) -> Unit,
+    glassOn: Boolean,
+    onGlassChange: (Boolean) -> Unit,
     nickname: String,
     avatarPath: String?,
     onRename: () -> Unit,
@@ -2131,6 +2288,14 @@ private fun DataScreen(
                         ThemeMode.ALL.forEach { mode ->
                             ChoiceChip(ThemeMode.label(mode), themeMode == mode) { onThemeChange(mode) }
                         }
+                    }
+                    Spacer(Modifier.height(16.dp))
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f)) {
+                            Text("磨砂玻璃", fontWeight = FontWeight.SemiBold)
+                            Text("渐变背景 + 半透明卡片和底栏", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                        Switch(checked = glassOn, onCheckedChange = onGlassChange)
                     }
                     Spacer(Modifier.height(16.dp))
                     Text("主题颜色", fontWeight = FontWeight.SemiBold)

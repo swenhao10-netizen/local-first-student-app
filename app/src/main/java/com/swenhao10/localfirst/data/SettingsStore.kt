@@ -83,6 +83,14 @@ object SettingsStore {
         prefs(context).edit().putString(KEY_PALETTE, id).apply()
     }
 
+    /** 磨砂玻璃主题，默认开。 */
+    fun isGlassEnabled(context: Context): Boolean =
+        prefs(context).getBoolean("glass_theme", true)
+
+    fun setGlassEnabled(context: Context, on: Boolean) {
+        prefs(context).edit().putBoolean("glass_theme", on).apply()
+    }
+
     /** 早期版本自动塞的两张示例卡是否已经清掉（只清一次）。 */
     fun isSeedCardsCleaned(context: Context): Boolean =
         prefs(context).getBoolean("seed_cards_cleaned", false)
