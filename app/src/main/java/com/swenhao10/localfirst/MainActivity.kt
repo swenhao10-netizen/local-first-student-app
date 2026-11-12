@@ -216,6 +216,13 @@ import androidx.compose.foundation.gestures.rememberDraggableState
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.unit.IntOffset
 import kotlin.math.roundToInt
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.material3.ProvideTextStyle
+import androidx.compose.material.icons.filled.Check
+import androidx.compose.foundation.layout.imePadding
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -307,6 +314,63 @@ private fun SwipeToRemove(onRemove: () -> Unit, content: @Composable () -> Unit)
                     }
                 )
         ) { content() }
+    }
+}
+
+/**
+ * 统一的弹窗：从底部浮起的圆角面板，跟玻璃风格一致（深色半透明 + 细描边 + 拖动条），
+ * 参数跟 AlertDialog 一样，直接替换。
+ */
+@Composable
+private fun ZhAlertDialog(
+    onDismissRequest: () -> Unit,
+    confirmButton: @Composable () -> Unit = {},
+    dismissButton: (@Composable () -> Unit)? = null,
+    title: (@Composable () -> Unit)? = null,
+    text: (@Composable () -> Unit)? = null
+) {
+    val dark = MaterialTheme.colorScheme.background.red < 0.5f
+    var shown by remember { mutableStateOf(false) }
+    LaunchedEffect(Unit) { shown = true }
+    Dialog(onDismissRequest = onDismissRequest, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+        Box(
+            Modifier.fillMaxSize().clickable(interactionSource = remember { MutableInteractionSource() }, indication = null, onClick = onDismissRequest),
+            contentAlignment = Alignment.BottomCenter
+        ) {
+            AnimatedVisibility(shown, enter = slideInVertically { it / 3 } + fadeIn()) {
+                val shape = RoundedCornerShape(28.dp)
+                Column(
+                    Modifier
+                        .padding(horizontal = 12.dp, vertical = 16.dp)
+                        .navigationBarsPadding()
+                        .imePadding()
+                        .fillMaxWidth()
+                        .heightIn(max = 640.dp)
+                        .clip(shape)
+                        .background(if (dark) Color(0xF2161D1C) else Color(0xF7FBFDFC))
+                        .border(1.dp, (if (dark) Color.White else Color.Black).copy(alpha = .08f), shape)
+                        .clickable(interactionSource = remember { MutableInteractionSource() }, indication = null) {}
+                        .padding(horizontal = 22.dp)
+                        .padding(top = 10.dp, bottom = 14.dp)
+                ) {
+                    Box(Modifier.align(Alignment.CenterHorizontally).size(36.dp, 4.dp).clip(RoundedCornerShape(50)).background(MaterialTheme.colorScheme.onSurface.copy(alpha = .18f)))
+                    Spacer(Modifier.height(14.dp))
+                    if (title != null) {
+                        ProvideTextStyle(MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold)) { title() }
+                        Spacer(Modifier.height(10.dp))
+                    }
+                    if (text != null) {
+                        Box(Modifier.weight(1f, fill = false).verticalScroll(rememberScrollState())) {
+                            ProvideTextStyle(MaterialTheme.typography.bodyMedium) { text() }
+                        }
+                    }
+                    Row(Modifier.fillMaxWidth().padding(top = 8.dp), horizontalArrangement = Arrangement.End, verticalAlignment = Alignment.CenterVertically) {
+                        dismissButton?.invoke()
+                        confirmButton()
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -951,7 +1015,7 @@ private fun LocalFirstApp(db: AppDatabase) {
             )
         }
         if (showProfileMenu) {
-            AlertDialog(
+            ZhAlertDialog(
                 onDismissRequest = { showProfileMenu = false },
                 title = { Text("头像和昵称") },
                 text = { Text("头像只用本机图片，不上传。") },
@@ -1081,7 +1145,7 @@ private fun RecordScreen(
         ImageViewer(paths = paths, startIndex = start, onDismiss = { viewer = null })
     }
     pendingAction?.let { target ->
-        AlertDialog(
+        ZhAlertDialog(
             onDismissRequest = { pendingAction = null },
             title = { Text("删除这条记录？") },
             text = { Text(if (target.kind == "study") "背单词自动记的，删了就没了。" else "点一下这条记录可以直接改内容；删了就找不回来。") },
@@ -1129,7 +1193,7 @@ private fun AvatarFace(name: String, modifier: Modifier) {
 @Composable
 private fun RenameDialog(current: String, onCancel: () -> Unit, onSave: (String) -> Unit) {
     var value by remember { mutableStateOf(current) }
-    AlertDialog(
+    ZhAlertDialog(
         onDismissRequest = onCancel,
         title = { Text("改个名字") },
         text = {
@@ -2538,32 +2602,45 @@ private fun WordsScreen(
     }
 
     if (showBookPicker) {
-        AlertDialog(
+        ZhAlertDialog(
             onDismissRequest = { showBookPicker = false },
             title = { Text("换词书") },
             text = {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text("每本书各记各的进度；复习和生词本不分书，换书不丢。", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    PackStore.BOOKS.forEach { b ->
-                        val sel = b.id == bookId
-                        val idx = SettingsStore.getBookIndex(context, b.id)
-                        Surface(
-                            color = if (sel) MaterialTheme.colorScheme.primary.copy(alpha = .14f) else MaterialTheme.colorScheme.surfaceVariant,
-                            shape = RoundedCornerShape(14.dp),
-                            border = if (sel) BorderStroke(1.dp, MaterialTheme.colorScheme.primary) else null,
-                            modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp)).clickable {
-                                showBookPicker = false
-                                if (!sel) onChangeBook(b.id)
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text("每本书各记各的进度，复习和生词本不分书。", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    PackStore.BOOKS.chunked(2).forEach { pair ->
+                        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                            pair.forEach { b ->
+                                val sel = b.id == bookId
+                                val idx = SettingsStore.getBookIndex(context, b.id)
+                                val pct = if (b.count == 0) 0f else (idx.toFloat() / b.count).coerceIn(0f, 1f)
+                                val fg = if (sel) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurface
+                                Column(
+                                    Modifier
+                                        .weight(1f)
+                                        .clip(RoundedCornerShape(18.dp))
+                                        .background(if (sel) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface.copy(alpha = .06f))
+                                        .clickable {
+                                            showBookPicker = false
+                                            if (!sel) onChangeBook(b.id)
+                                        }
+                                        .padding(horizontal = 14.dp, vertical = 12.dp),
+                                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                                ) {
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Text(b.shortName, fontWeight = FontWeight.Bold, color = fg, modifier = Modifier.weight(1f))
+                                        if (sel) Icon(Icons.Default.Check, null, tint = fg, modifier = Modifier.size(16.dp))
+                                    }
+                                    Text(if (idx > 0) "学到 ${idx + 1} / %,d".format(b.count) else "%,d 词".format(b.count), style = MaterialTheme.typography.labelMedium, color = fg.copy(alpha = .72f))
+                                    Box(Modifier.fillMaxWidth().height(4.dp).clip(RoundedCornerShape(50)).background(fg.copy(alpha = .14f))) {
+                                        Box(Modifier.fillMaxWidth(pct.coerceAtLeast(if (idx > 0) 0.03f else 0f)).fillMaxHeight().clip(RoundedCornerShape(50)).background(if (sel) fg else MaterialTheme.colorScheme.primary))
+                                    }
+                                }
                             }
-                        ) {
-                            Row(Modifier.padding(horizontal = 14.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
-                                Text(b.shortName, fontWeight = FontWeight.Bold, modifier = Modifier.width(64.dp))
-                                Text("%,d 词".format(b.count) + if (idx > 0) " · 学到 ${idx + 1}" else "", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.weight(1f))
-                                if (sel) Text("在学", color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelLarge)
-                            }
+                            if (pair.size == 1) Spacer(Modifier.weight(1f))
                         }
                     }
-                    Text("专四、专八暂时没有可用的开源词表。", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text("专四、专八暂时没有可用的开源词表", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             },
             confirmButton = {},
@@ -2574,7 +2651,7 @@ private fun WordsScreen(
         WordDetailDialog(w, wordMap[w.headword], unknownWords.firstOrNull { it.headword == w.headword }, progressDao, unknownDao, onSpeak = { speak(it) }, onDismiss = { detailWord = null })
     }
     cardToDelete?.let { target ->
-        AlertDialog(
+        ZhAlertDialog(
             onDismissRequest = { cardToDelete = null },
             title = { Text("删除「${target.front}」？") },
             text = { Text("删了就找不回来。") },
@@ -2622,7 +2699,7 @@ private fun WordDetailDialog(
     var progress by remember(word.headword) { mutableStateOf<WordProgress?>(null) }
     LaunchedEffect(word.headword) { progress = withContext(Dispatchers.IO) { progressDao.get(word.headword) } }
     val dateFmt = remember { SimpleDateFormat("M 月 d 日", Locale.CHINA) }
-    AlertDialog(
+    ZhAlertDialog(
         onDismissRequest = onDismiss,
         title = {
             Column {
@@ -2941,7 +3018,7 @@ private fun DataScreen(
         }
     }
     if (showAiExport) {
-        AlertDialog(
+        ZhAlertDialog(
             onDismissRequest = { showAiExport = false },
             title = { Text("导出给 AI") },
             text = {
@@ -3287,7 +3364,7 @@ private fun MineRow(icon: ImageVector, title: String, sub: String, onClick: () -
 private fun AddCardDialog(dismiss: () -> Unit, save: (String, String) -> Unit) {
     var front by remember { mutableStateOf("") }
     var back by remember { mutableStateOf("") }
-    AlertDialog(
+    ZhAlertDialog(
         onDismissRequest = dismiss,
         title = { Text("添加学习卡片") },
         text = {
