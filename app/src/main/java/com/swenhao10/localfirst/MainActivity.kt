@@ -2836,7 +2836,7 @@ private fun WordDetailDialog(
             }
         },
         text = {
-            Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 val tags = full?.tags.orEmpty().mapNotNull { PackStore.tagLabel(it) }
                 if (tags.isNotEmpty()) {
                     FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
