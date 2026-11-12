@@ -226,6 +226,9 @@ import androidx.compose.foundation.layout.imePadding
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.key
+import com.swenhao10.localfirst.autobook.AutoBook
+import com.swenhao10.localfirst.autobook.Payment
+import androidx.lifecycle.compose.LifecycleResumeEffect
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -3239,6 +3242,56 @@ private fun DataScreen(
                         Spacer(Modifier.width(4.dp))
                         TextButton(onClick = { pickReminderTime() }) { Text("改时间") }
                     }
+                }
+            }
+        }
+        item {
+            // 自动记账：读微信 / 支付宝 / 云闪付的付款通知
+            val ctx = LocalContext.current
+            var hasAccess by remember { mutableStateOf(AutoBook.hasAccess(ctx)) }
+            var autoOn by remember { mutableStateOf(AutoBook.isEnabled(ctx)) }
+            var askFirst by remember { mutableStateOf(AutoBook.askFirst(ctx)) }
+            LifecycleResumeEffect(Unit) {
+                hasAccess = AutoBook.hasAccess(ctx)
+                onPauseOrDispose { }
+            }
+            Text("自动记账", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+            Spacer(Modifier.height(8.dp))
+            GlassCard(color = MaterialTheme.colorScheme.surface, shape = RoundedCornerShape(20.dp)) {
+                Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f)) {
+                            Text("付款后自动记一笔", fontWeight = FontWeight.SemiBold)
+                            Text(
+                                if (hasAccess) "已开启：会读微信、支付宝、云闪付的付款通知" else "要先在系统里给知行「通知使用权」",
+                                style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        if (hasAccess) {
+                            Switch(checked = autoOn, onCheckedChange = { autoOn = it; AutoBook.setEnabled(ctx, it) })
+                        } else {
+                            TextButton(onClick = { runCatching { ctx.startActivity(AutoBook.accessSettingsIntent(ctx)) } }) { Text("去开启") }
+                        }
+                    }
+                    if (hasAccess) {
+                        HorizontalDivider()
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Column(Modifier.weight(1f)) {
+                                Text("入账前先问我", fontWeight = FontWeight.SemiBold)
+                                Text(if (askFirst) "弹通知让你点「入账」，ColorOS 16 上进流体云" else "直接记入，通知里可以撤销", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
+                            Switch(checked = askFirst, onCheckedChange = { askFirst = it; AutoBook.setAskFirst(ctx, it) })
+                        }
+                        HorizontalDivider()
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Column(Modifier.weight(1f)) {
+                                Text("试一下", fontWeight = FontWeight.SemiBold)
+                                Text("发一条示例通知，不会真的记账", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
+                            TextButton(onClick = { AutoBook.prompt(ctx, Payment(3650, "示例商家", "微信支付", "餐饮"), demo = true) }) { Text("试一下") }
+                        }
+                    }
+                    Text("只在本机识别，不联网；退款、收款、红包、转账不记。OPPO 记得给知行开「自启动」，不然后台会被关。", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             }
         }

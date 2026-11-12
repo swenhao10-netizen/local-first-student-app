@@ -5,6 +5,8 @@
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <!-- 把记录里的照片/视频存回相册：Android 10 起不需要权限，9 及以下才用到。 -->
     <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="28" />
+    <!-- 自动记账在安卓 16 上请求进流体云 / 实时活动。 -->
+    <uses-permission android:name="android.permission.POST_PROMOTED_NOTIFICATIONS" />
     <uses-feature android:name="android.hardware.camera" android:required="false" />
     <application android:theme="@style/Theme.LocalFirst" android:label="知行" android:icon="@mipmap/ic_launcher" android:roundIcon="@mipmap/ic_launcher" android:allowBackup="false" android:supportsRtl="true">
         <activity android:name=".MainActivity" android:exported="true">
@@ -27,5 +29,11 @@
             <intent-filter><action android:name="android.appwidget.action.APPWIDGET_UPDATE" /></intent-filter>
             <meta-data android:name="android.appwidget.provider" android:resource="@xml/felt_widget_small_info" />
         </receiver>
+        <!-- 自动记账：只读微信、支付宝、云闪付的付款通知，需要用户在系统设置里手动给「通知使用权」。 -->
+        <service android:name=".autobook.PayListener" android:label="知行自动记账" android:exported="true"
+            android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE">
+            <intent-filter><action android:name="android.service.notification.NotificationListenerService" /></intent-filter>
+        </service>
+        <receiver android:name=".autobook.AutoBookReceiver" android:exported="false" />
     </application>
 </manifest>
