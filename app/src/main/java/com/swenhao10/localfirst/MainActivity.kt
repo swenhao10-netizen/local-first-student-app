@@ -245,15 +245,59 @@ class MainActivity : ComponentActivity() {
         com.swenhao10.localfirst.widget.FeltWidgetBase.refreshAll(this)
     }
     override fun onCreate(state: Bundle?) {
+        installCrashLog()
         super.onCreate(state)
         val db = AppDatabase.get(this)
+        val crashFile = java.io.File(filesDir, "last_crash.txt")
+        val lastCrash = runCatching { if (crashFile.exists()) crashFile.readText() else null }.getOrNull()
         setContent {
             // 启动动画只在冷启动放一次（转屏等重建不再放），点一下可跳过
             var showSplash by rememberSaveable { mutableStateOf(state == null) }
+            var crashText by remember { mutableStateOf(lastCrash) }
             Box(Modifier.fillMaxSize()) {
                 LocalFirstApp(db)
                 if (showSplash) LaunchAnimation(onFinished = { showSplash = false })
+                crashText?.let { txt ->
+                    // 上次闪退的原因：只存在本机，复制给开发者看
+                    val clip = androidx.compose.ui.platform.LocalClipboardManager.current
+                    androidx.compose.material3.AlertDialog(
+                        onDismissRequest = { },
+                        title = { Text("上次闪退了") },
+                        text = {
+                            Column(Modifier.heightIn(max = 360.dp).verticalScroll(rememberScrollState())) {
+                                Text("点「复制」把下面的内容发给我，我按它修。", style = MaterialTheme.typography.bodySmall)
+                                Spacer(Modifier.height(8.dp))
+                                androidx.compose.foundation.text.selection.SelectionContainer {
+                                    Text(txt, style = MaterialTheme.typography.labelSmall)
+                                }
+                            }
+                        },
+                        confirmButton = {
+                            TextButton(onClick = { clip.setText(androidx.compose.ui.text.AnnotatedString(txt)) }) { Text("复制") }
+                        },
+                        dismissButton = {
+                            TextButton(onClick = { crashFile.delete(); crashText = null }) { Text("关闭") }
+                        }
+                    )
+                }
             }
+        }
+    }
+
+    /** 闪退时把原因写到本机文件，下次打开弹出来，方便复制。 */
+    private fun installCrashLog() {
+        val prev = Thread.getDefaultUncaughtExceptionHandler()
+        val dir = filesDir
+        Thread.setDefaultUncaughtExceptionHandler { t, e ->
+            runCatching {
+                val sw = java.io.StringWriter()
+                e.printStackTrace(java.io.PrintWriter(sw))
+                val head = "知行 ${runCatching { packageManager.getPackageInfo(packageName, 0).versionName }.getOrNull()} · " +
+                    "Android ${android.os.Build.VERSION.RELEASE} · ${android.os.Build.MODEL} · 线程 ${t.name}\n" +
+                    java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss", java.util.Locale.CHINA).format(java.util.Date()) + "\n\n"
+                java.io.File(dir, "last_crash.txt").writeText(head + sw.toString().take(12000))
+            }
+            prev?.uncaughtException(t, e)
         }
     }
 }
@@ -1301,8 +1345,9 @@ private fun RecordImages(paths: List<String>, modifier: Modifier = Modifier, onI
     if (paths.size == 1) {
         val path = paths.first()
         val video = isVideoPath(path)
-        val bitmap = rememberBitmap(path)
-        if (bitmap != null || video) {
+        val bitmap = rememberBitmap(path, 720)
+        val exists = remember(path) { java.io.File(path).exists() }
+        if (exists) {
             Box(
                 modifier = modifier
                     .fillMaxWidth(0.7f)
@@ -1321,7 +1366,7 @@ private fun RecordImages(paths: List<String>, modifier: Modifier = Modifier, onI
                 }
                 if (video) {
                     PlayBadge()
-                    val dur = remember(path) { videoDurationMs(path) }
+                    val dur by androidx.compose.runtime.produceState<Long?>(null, path) { value = withContext(Dispatchers.IO) { videoDurationMs(path) } }
                     if (dur != null) DurationTag(dur, Modifier.align(Alignment.BottomEnd))
                 }
             }
@@ -1332,7 +1377,7 @@ private fun RecordImages(paths: List<String>, modifier: Modifier = Modifier, onI
         paths.chunked(3).forEachIndexed { rowIndex, row ->
             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 row.forEachIndexed { colIndex, path ->
-                    val bitmap = rememberBitmap(path)
+                    val bitmap = rememberBitmap(path, 360)
                     Box(
                         modifier = Modifier
                             .weight(1f)
@@ -2291,7 +2336,8 @@ private fun WordsScreen(
             saveProgress()
             val wasNew = progress == null
             scope.launch {
-                withContext(Dispatchers.IO) {
+                // 写库出错不能把整个 App 带崩：最多这一次进度没记上
+                runCatching { withContext(Dispatchers.IO) {
                     progressDao.upsert(WordStudy.answer(progressDao.get(lite.headword), lite, known))
                     WordStudy.bumpToday(dayDao, isNew = wasNew && !isReview)
                     if (study.mode == StudyMode.UNKNOWN) {
@@ -2306,7 +2352,7 @@ private fun WordsScreen(
                             unknownDao.insert(UnknownWord(headword = lite.headword, phonetic = lite.phonetic, meaning = lite.meaning))
                         } else unknownDao.setKnownCount(lite.headword, 0)
                     }
-                }
+                } }.onFailure { android.util.Log.w("WordStudy", "answer save failed", it) }
             }
         }
         fun next() {
@@ -3548,20 +3594,39 @@ private fun labelFor(record: RecordEntry): String = when (record.kind) {
 /** 按图片路径解码一张缩略图（本机文件不存在或损坏返回 null）。 */
 @Composable
 private fun rememberBitmap(path: String?, maxDim: Int = 1024): androidx.compose.ui.graphics.ImageBitmap? {
-    return remember(path) {
-        if (path == null) return@remember null
-        if (isVideoPath(path)) return@remember videoFrame(path, maxDim)?.asImageBitmap()
-        try {
-            val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-            BitmapFactory.decodeFile(path, bounds)
-            if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return@remember null
-            var sample = 1
-            while (bounds.outWidth / sample > maxDim || bounds.outHeight / sample > maxDim) sample *= 2
-            val opts = BitmapFactory.Options().apply { inSampleSize = sample }
-            BitmapFactory.decodeFile(path, opts)?.asImageBitmap()
-        } catch (e: Exception) {
-            null
+    // 解码放到后台线程 + 内存缓存：以前在主线程同步解码，时间轴一滑就卡
+    val key = "$path@$maxDim"
+    val state = androidx.compose.runtime.produceState(initialValue = path?.let { BitmapCache.get(key) }, key) {
+        if (value == null && path != null) {
+            value = withContext(Dispatchers.IO) { decodeBitmapFile(path, maxDim) }?.also { BitmapCache.put(key, it) }
         }
+    }
+    return state.value
+}
+
+/** 解码过的图按字节数缓存，最多用 1/8 的可用内存。 */
+private object BitmapCache {
+    private val cache = object : android.util.LruCache<String, androidx.compose.ui.graphics.ImageBitmap>(
+        (Runtime.getRuntime().maxMemory() / 8).coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
+    ) {
+        override fun sizeOf(key: String, value: androidx.compose.ui.graphics.ImageBitmap) = value.width * value.height * 4
+    }
+    fun get(key: String) = cache.get(key)
+    fun put(key: String, bmp: androidx.compose.ui.graphics.ImageBitmap) { cache.put(key, bmp) }
+}
+
+private fun decodeBitmapFile(path: String, maxDim: Int): androidx.compose.ui.graphics.ImageBitmap? {
+    if (isVideoPath(path)) return videoFrame(path, maxDim)?.asImageBitmap()
+    return try {
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        BitmapFactory.decodeFile(path, bounds)
+        if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
+        var sample = 1
+        while (bounds.outWidth / sample > maxDim || bounds.outHeight / sample > maxDim) sample *= 2
+        val opts = BitmapFactory.Options().apply { inSampleSize = sample }
+        BitmapFactory.decodeFile(path, opts)?.asImageBitmap()
+    } catch (e: Throwable) {
+        null
     }
 }
 
