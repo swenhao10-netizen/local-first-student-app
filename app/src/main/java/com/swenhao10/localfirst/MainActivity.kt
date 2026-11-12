@@ -45,6 +45,31 @@ import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.CalendarMonth
 import androidx.compose.material.icons.filled.ChevronLeft
 import com.swenhao10.localfirst.ui.LaunchAnimation
+import androidx.compose.animation.SizeTransform
+import androidx.compose.animation.togetherWith
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.animation.slideOutVertically
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.shrinkVertically
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
+import androidx.compose.animation.animateContentSize
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.core.MutableTransitionState
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.LocalHapticFeedback
+import com.swenhao10.localfirst.ui.Motion
+import com.swenhao10.localfirst.ui.LocalReduceMotion
+import com.swenhao10.localfirst.ui.motion
+import com.swenhao10.localfirst.ui.pressScale
+import com.swenhao10.localfirst.ui.rememberReduceMotion
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.ExperimentalFoundationApi
@@ -77,6 +102,9 @@ import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.LazyItemScope
+import androidx.compose.animation.core.VisibilityThreshold
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
@@ -346,7 +374,10 @@ private fun TipPill(text: String, actionLabel: String? = null, onAction: () -> U
     }
 }
 
-/** 向右滑动移除：滑过三分之一松手就删，不够就弹回。 */
+/**
+ * 向右滑动移除：滑过三分之一，或者往右甩一下（速度 > 1000px/s）就删；不够就带着手指速度弹回。
+ * 越过阈值那一刻给一次触感，图标轻轻弹一下。
+ */
 @Composable
 private fun SwipeToRemove(onRemove: () -> Unit, content: @Composable () -> Unit) {
     val scope = rememberCoroutineScope()
@@ -355,6 +386,13 @@ private fun SwipeToRemove(onRemove: () -> Unit, content: @Composable () -> Unit)
     val threshold = widthPx * 0.33f
     val progress = (offset.value / threshold).coerceIn(0f, 1f)
     val red = MaterialTheme.colorScheme.error
+    val haptic = LocalHapticFeedback.current
+    var armed by remember { mutableStateOf(false) }
+    val iconScale by animateFloatAsState(
+        if (armed) 1.15f else 1f,
+        motion(spring(dampingRatio = 0.5f, stiffness = 600f)),
+        label = "swipeIcon"
+    )
     Box(Modifier.fillMaxWidth().onSizeChanged { widthPx = it.width.toFloat().coerceAtLeast(1f) }) {
         if (offset.value > 0f) {
             Box(
@@ -362,7 +400,10 @@ private fun SwipeToRemove(onRemove: () -> Unit, content: @Composable () -> Unit)
                 contentAlignment = Alignment.CenterStart
             ) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(Icons.Default.Delete, null, tint = MaterialTheme.colorScheme.onError)
+                    Icon(
+                        Icons.Default.Delete, null, tint = MaterialTheme.colorScheme.onError,
+                        modifier = Modifier.graphicsLayer { scaleX = iconScale; scaleY = iconScale }
+                    )
                     Spacer(Modifier.width(8.dp))
                     Text(if (progress >= 1f) "松手移出" else "移出生词本", color = MaterialTheme.colorScheme.onError, fontWeight = FontWeight.SemiBold)
                 }
@@ -373,16 +414,33 @@ private fun SwipeToRemove(onRemove: () -> Unit, content: @Composable () -> Unit)
                 .offset { IntOffset(offset.value.roundToInt(), 0) }
                 .draggable(
                     orientation = Orientation.Horizontal,
-                    state = rememberDraggableState { d -> scope.launch { offset.snapTo((offset.value + d).coerceIn(0f, widthPx)) } },
-                    onDragStopped = {
-                        if (offset.value >= threshold) {
-                            offset.animateTo(widthPx)
+                    state = rememberDraggableState { d ->
+                        val next = (offset.value + d).coerceIn(0f, widthPx)
+                        val now = next >= threshold
+                        if (now != armed) {
+                            armed = now
+                            haptic.performHapticFeedback(HapticFeedbackType.GestureThresholdActivate)
+                        }
+                        scope.launch { offset.snapTo(next) }
+                    },
+                    onDragStopped = { v ->
+                        if (v > 1000f || offset.value >= threshold) {
+                            offset.animateTo(widthPx, tween(180, easing = Motion.EaseOut), initialVelocity = v)
                             onRemove()
-                        } else offset.animateTo(0f)
+                        } else {
+                            armed = false
+                            offset.animateTo(0f, spring(dampingRatio = 0.8f, stiffness = 400f), initialVelocity = v)
+                        }
                     }
                 )
         ) { content() }
     }
+}
+
+/** 弹窗宿主里的一项：内容 + 进出状态。调用方离开组合时只把 targetState 设成 false，等退场动画放完宿主再移除。 */
+private class OverlayEntry(content: @Composable (MutableTransitionState<Boolean>) -> Unit) {
+    var content by mutableStateOf(content)
+    val visible = MutableTransitionState(false).apply { targetState = true }
 }
 
 /**
@@ -398,19 +456,28 @@ private fun ZhAlertDialog(
     text: (@Composable () -> Unit)? = null
 ) {
     val host = LocalOverlay.current
-    val panel: @Composable () -> Unit = { ZhSheet(onDismissRequest, confirmButton, dismissButton, title, text) }
+    val panel: @Composable (MutableTransitionState<Boolean>) -> Unit = { vis -> ZhSheet(vis, onDismissRequest, confirmButton, dismissButton, title, text) }
     if (host == null) {
-        Dialog(onDismissRequest = onDismissRequest, properties = DialogProperties(usePlatformDefaultWidth = false)) { panel() }
+        val vis = remember { MutableTransitionState(false).apply { targetState = true } }
+        Dialog(onDismissRequest = onDismissRequest, properties = DialogProperties(usePlatformDefaultWidth = false)) { panel(vis) }
         return
     }
     val id = remember { Any() }
-    SideEffect { host[id] = panel }
-    DisposableEffect(id) { onDispose { host.remove(id) } }
+    SideEffect {
+        val e = host[id]
+        if (e == null) host[id] = OverlayEntry(panel) else e.content = panel
+    }
+    DisposableEffect(id) { onDispose { host[id]?.visible?.targetState = false } }
 }
 
-/** 底部浮起的玻璃面板：压暗背后 + 真玻璃（模糊折射背景）+ 细描边 + 拖动条。 */
+/**
+ * 底部浮起的玻璃面板：压暗背后 + 真玻璃（模糊折射背景）+ 细描边 + 拖动条。
+ * 进：弹簧升起（不回弹）；出：180ms 下滑；遮罩 200/150ms 渐变。拖动条真能拖：往下拖过 1/4 或甩一下就关。
+ * 注意：text 槽外面已经套了 verticalScroll，里面不要再放 verticalScroll / Lazy*，会闪退。
+ */
 @Composable
 private fun ZhSheet(
+    visible: MutableTransitionState<Boolean>,
     onDismissRequest: () -> Unit,
     confirmButton: @Composable () -> Unit,
     dismissButton: (@Composable () -> Unit)?,
@@ -419,16 +486,28 @@ private fun ZhSheet(
 ) {
     val dark = MaterialTheme.colorScheme.background.red < 0.5f
     val glassOn = LocalBackdrop.current != null
-    var shown by remember { mutableStateOf(false) }
-    LaunchedEffect(Unit) { shown = true }
-    BackHandler(onBack = onDismissRequest)
+    val reduce = LocalReduceMotion.current
+    val open = visible.targetState
+    BackHandler(enabled = open, onBack = onDismissRequest)
+    val scrimTarget = if (dark) .45f else .28f
+    // 遮罩从 0 渐变到目标透明度（进 200ms / 出 150ms），不再突然压暗
+    val scrimAnim = remember { Animatable(0f) }
+    LaunchedEffect(open) { scrimAnim.animateTo(if (open) scrimTarget else 0f, tween(if (open) 200 else 150, easing = Motion.EaseOut)) }
+    val scope = rememberCoroutineScope()
+    val dragY = remember { Animatable(0f) }
+    var panelH by remember { mutableStateOf(1f) }
+    val scrimSource = remember { MutableInteractionSource() }
     Box(
         Modifier.fillMaxSize()
-            .background(Color.Black.copy(alpha = if (dark) .45f else .28f))
-            .clickable(interactionSource = remember { MutableInteractionSource() }, indication = null, onClick = onDismissRequest),
+            .drawBehind { drawRect(Color.Black.copy(alpha = scrimAnim.value)) }
+            .clickable(interactionSource = scrimSource, indication = null, enabled = open, onClick = onDismissRequest),
         contentAlignment = Alignment.BottomCenter
     ) {
-        AnimatedVisibility(shown, enter = slideInVertically { it / 3 } + fadeIn()) {
+        AnimatedVisibility(
+            visibleState = visible,
+            enter = if (reduce) fadeIn(tween(Motion.SMALL)) else slideInVertically(spring(dampingRatio = 1f, stiffness = 500f)) { it } + fadeIn(tween(120)),
+            exit = if (reduce) fadeOut(tween(120)) else slideOutVertically(tween(180, easing = Motion.EaseOut)) { it } + fadeOut(tween(120))
+        ) {
             val shape = RoundedCornerShape(30.dp)
             Column(
                 Modifier
@@ -437,6 +516,8 @@ private fun ZhSheet(
                     .imePadding()
                     .fillMaxWidth()
                     .heightIn(max = 640.dp)
+                    .onSizeChanged { panelH = it.height.toFloat().coerceAtLeast(1f) }
+                    .offset { IntOffset(0, dragY.value.roundToInt()) }
                     .then(
                         if (glassOn) Modifier.glass(shape, if (dark) Color(0x8C182120) else Color(0xA6FFFFFF), blurDp = 24f, lensDp = 18f)
                         else Modifier.clip(shape).background(if (dark) Color(0xF2161D1C) else Color(0xF7FBFDFC))
@@ -444,10 +525,36 @@ private fun ZhSheet(
                     .border(1.dp, Color.White.copy(alpha = if (dark) .14f else .5f), shape)
                     .clickable(interactionSource = remember { MutableInteractionSource() }, indication = null) {}
                     .padding(horizontal = 22.dp)
-                    .padding(top = 10.dp, bottom = 14.dp)
+                    .padding(bottom = 14.dp)
             ) {
-                Box(Modifier.align(Alignment.CenterHorizontally).size(36.dp, 4.dp).clip(RoundedCornerShape(50)).background(MaterialTheme.colorScheme.onSurface.copy(alpha = .25f)))
-                Spacer(Modifier.height(14.dp))
+                // 拖动条：往下拖跟手，往上拖有阻力；松手看速度和距离决定关还是弹回
+                Box(
+                    Modifier
+                        .fillMaxWidth()
+                        .height(28.dp)
+                        .draggable(
+                            orientation = Orientation.Vertical,
+                            enabled = open,
+                            state = rememberDraggableState { d ->
+                                val cur = dragY.value
+                                val next = if (cur + d < 0f) cur + d * 0.3f else cur + d
+                                scope.launch { dragY.snapTo(next.coerceAtLeast(-60f)) }
+                            },
+                            onDragStopped = { v ->
+                                if (v > 1000f || dragY.value > panelH * 0.25f) {
+                                    onDismissRequest()
+                                    delay(60)
+                                    // 调用方没有关（比如正在下载），就弹回去
+                                    if (visible.targetState) dragY.animateTo(0f, spring(dampingRatio = 0.8f, stiffness = 400f))
+                                } else {
+                                    dragY.animateTo(0f, spring(dampingRatio = 0.8f, stiffness = 400f), initialVelocity = v)
+                                }
+                            }
+                        ),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Box(Modifier.size(36.dp, 4.dp).clip(RoundedCornerShape(50)).background(MaterialTheme.colorScheme.onSurface.copy(alpha = .25f)))
+                }
                 if (title != null) {
                     ProvideTextStyle(MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold)) { title() }
                     Spacer(Modifier.height(10.dp))
@@ -639,7 +746,7 @@ private val LocalGlass = staticCompositionLocalOf { false }
 /** 玻璃要“透过去”看到的那层背景；null = 没开玻璃，退回普通半透明。 */
 private val LocalBackdrop = staticCompositionLocalOf<LayerBackdrop?> { null }
 /** 弹窗宿主：ZhAlertDialog 把自己挂到这里，画在主界面最上层。 */
-private val LocalOverlay = staticCompositionLocalOf<androidx.compose.runtime.snapshots.SnapshotStateMap<Any, @Composable () -> Unit>?> { null }
+private val LocalOverlay = staticCompositionLocalOf<androidx.compose.runtime.snapshots.SnapshotStateMap<Any, OverlayEntry>?> { null }
 /** 自定义背景图路径；null = 默认渐变。 */
 private val LocalBgPath = staticCompositionLocalOf<String?> { null }
 
@@ -796,12 +903,13 @@ private fun GlassButton(
     content: @Composable androidx.compose.foundation.layout.RowScope.() -> Unit
 ) {
     val backdrop = LocalBackdrop.current
+    val enabledAlpha by animateFloatAsState(if (enabled) 1f else 0.45f, tween(Motion.SMALL), label = "glassEnabled")
     if (backdrop != null) {
         LiquidButton(
             onClick = { if (enabled) onClick() },
             backdrop = backdrop,
             tint = tint ?: Color.Unspecified,
-            modifier = modifier.graphicsLayer { alpha = if (enabled) 1f else 0.45f },
+            modifier = modifier.graphicsLayer { alpha = enabledAlpha },
             content = content
         )
     } else if (tint != null) {
@@ -813,7 +921,7 @@ private fun GlassButton(
 
 /** 提醒色（待复习、记错次数）：固定的琥珀色，不随主题的 secondary 变（暖橙主题里 secondary 是绿色）。 */
 @Composable
-private fun warnColor(): Color =
+private fun warnTone(): Color =
     if (MaterialTheme.colorScheme.background.luminanceApprox() < 0.5f) Color(0xFFE6A85C) else Color(0xFFA35F0E)
 
 private fun Color.luminanceApprox(): Float = 0.2126f * red + 0.7152f * green + 0.0722f * blue
@@ -837,7 +945,22 @@ private fun LocalFirstApp(db: AppDatabase) {
     val scope = rememberCoroutineScope()
     var tab by remember { mutableStateOf(Tab.RECORD) }
     var showAddRecord by remember { mutableStateOf(false) }
+    // 正在编辑的记录（null = 新发一条）
+    var editingRecord by remember { mutableStateOf<RecordEntry?>(null) }
+    // 每次打开发记录页 +1：退场动画还没放完又点开时，用新的一份草稿，不沿用上一次的
+    var addSession by remember { mutableStateOf(0) }
     var message by remember { mutableStateOf("") }
+    val haptic = LocalHapticFeedback.current
+    val reduceMotion = rememberReduceMotion()
+    fun selectTab(t: Tab) {
+        if (t != tab) haptic.performHapticFeedback(HapticFeedbackType.SegmentTick)
+        tab = t
+    }
+    fun openAdd(record: RecordEntry?) {
+        editingRecord = record
+        addSession += 1
+        showAddRecord = true
+    }
     val snackbarHostState = remember { SnackbarHostState() }
     val context = LocalContext.current
     val cardsDao = remember(db) { db.cards() }
@@ -863,8 +986,6 @@ private fun LocalFirstApp(db: AppDatabase) {
     var avatarPath by remember { mutableStateOf(SettingsStore.getAvatar(context)) }
     var showRename by remember { mutableStateOf(false) }
     var showProfileMenu by remember { mutableStateOf(false) }
-    // 正在编辑的记录（null = 新发一条）
-    var editingRecord by remember { mutableStateOf<RecordEntry?>(null) }
     val avatarLauncher = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
         if (uri != null) {
             scope.launch {
@@ -945,8 +1066,9 @@ private fun LocalFirstApp(db: AppDatabase) {
     val baseScheme = paletteFor(paletteId, useDarkTheme)
     MaterialTheme(colorScheme = if (glassOn) glassScheme(baseScheme, useDarkTheme) else baseScheme) {
         val layerBackdrop = rememberLayerBackdrop()
-        val overlays = remember { mutableStateMapOf<Any, @Composable () -> Unit>() }
+        val overlays = remember { mutableStateMapOf<Any, OverlayEntry>() }
         CompositionLocalProvider(
+            LocalReduceMotion provides reduceMotion,
             LocalOverlay provides overlays,
             LocalGlass provides glassOn,
             LocalBackdrop provides (if (glassOn) layerBackdrop else null),
@@ -954,25 +1076,23 @@ private fun LocalFirstApp(db: AppDatabase) {
         ) {
         Box(Modifier.fillMaxSize()) {
         if (glassOn) GlassBackground(useDarkTheme, Modifier.layerBackdrop(layerBackdrop))
+        val tabStates = androidx.compose.runtime.saveable.rememberSaveableStateHolder()
         Scaffold(
             containerColor = if (glassOn) Color.Transparent else MaterialTheme.colorScheme.background,
             contentColor = MaterialTheme.colorScheme.onBackground,
             snackbarHost = { SnackbarHost(snackbarHostState) { data -> TipPill(data.visuals.message, data.visuals.actionLabel) { data.performAction() } } },
             bottomBar = {
                 if (glassOn) {
-                    GlassBottomBar(selected = tab, onSelect = { tab = it }, onAdd = {
-                        editingRecord = null
-                        showAddRecord = true
-                    })
+                    GlassBottomBar(selected = tab, onSelect = { selectTab(it) }, onAdd = { openAdd(null) })
                 } else NavigationBar(containerColor = MaterialTheme.colorScheme.surface) {
                     Tab.values().forEach { item ->
                         NavigationBarItem(
                             selected = tab == item,
-                            onClick = { tab = item },
+                            onClick = { selectTab(item) },
                             icon = { Icon(iconFor(item), contentDescription = item.label) },
                             label = { Text(item.label) },
                             colors = NavigationBarItemDefaults.colors(
-                                indicatorColor = Color.Transparent,
+                                indicatorColor = MaterialTheme.colorScheme.secondaryContainer,
                                 selectedIconColor = MaterialTheme.colorScheme.primary,
                                 selectedTextColor = MaterialTheme.colorScheme.primary,
                                 unselectedIconColor = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -983,23 +1103,23 @@ private fun LocalFirstApp(db: AppDatabase) {
                 }
             }
         ) { padding ->
-            AnimatedContent(targetState = tab, label = "tab-transition") { selected ->
+            // Tab 是平级的：只做 150ms 淡入，不缩放、不滑动；每个 Tab 的滚动位置和子页面状态切回来还在
+            AnimatedContent(
+                targetState = tab,
+                transitionSpec = { fadeIn(tween(Motion.SMALL, easing = Motion.EaseOut)) togetherWith fadeOut(tween(90)) using SizeTransform(clip = false) },
+                label = "tab-transition"
+            ) { selected ->
+                tabStates.SaveableStateProvider(selected.name) {
                 when (selected) {
                     Tab.RECORD -> RecordScreen(
                         records = records,
                         nickname = nickname,
                         avatarPath = avatarPath,
                         onEditProfile = { avatarLauncher.launch("image/*") },
-                        onAddRecord = {
-                            editingRecord = null
-                            showAddRecord = true
-                        },
+                        onAddRecord = { openAdd(null) },
                         onSearch = { message = "还没有记录" },
                         modifier = Modifier.padding(padding),
-                        onEditRecord = { record ->
-                            editingRecord = record
-                            showAddRecord = true
-                        },
+                        onEditRecord = { record -> openAdd(record) },
                         onDeleteRecord = { record -> deleteRecordWithUndo(record) }
                     )
                     Tab.WORDS -> WordsScreen(
@@ -1059,6 +1179,7 @@ private fun LocalFirstApp(db: AppDatabase) {
                         onChangeAvatar = { avatarLauncher.launch("image/*") }
                     ) { message = it }
                 }
+                }
             }
         }
         LaunchedEffect(message) {
@@ -1067,13 +1188,19 @@ private fun LocalFirstApp(db: AppDatabase) {
                 message = ""
             }
         }
-        if (showAddRecord) {
+        // 发记录页：从底部升起（300ms），关闭时下滑退出（200ms）；退场途中内容保持不变
+        AnimatedVisibility(
+            visible = showAddRecord,
+            enter = if (reduceMotion) fadeIn(tween(Motion.SMALL)) else slideInVertically(tween(Motion.SHEET, easing = Motion.EaseSheet)) { it } + fadeIn(tween(Motion.SMALL)),
+            exit = if (reduceMotion) fadeOut(tween(Motion.EXIT)) else slideOutVertically(tween(Motion.STATE, easing = Motion.EaseOut)) { it } + fadeOut(tween(Motion.EXIT))
+        ) {
+          key(addSession) {
             val editing = editingRecord
             AddRecordScreen(
                 editing = editing,
+                active = showAddRecord,
                 onCancel = {
                     showAddRecord = false
-                    editingRecord = null
                 },
                 onPublish = { text, newUris, keptPaths, amountCents, category, moneyKind ->
                     scope.launch {
@@ -1114,11 +1241,12 @@ private fun LocalFirstApp(db: AppDatabase) {
                             }
                         }
                         showAddRecord = false
-                        editingRecord = null
+                        haptic.performHapticFeedback(HapticFeedbackType.Confirm)
                         message = if (editing == null) "已保存到本机" else "这条已经改好了"
                     }
                 }
             )
+          }
         }
         if (showProfileMenu) {
             ZhAlertDialog(
@@ -1151,11 +1279,27 @@ private fun LocalFirstApp(db: AppDatabase) {
             )
         }
         // 弹窗都画在这一层：跟页面在同一个窗口里，玻璃才能透出背景
-        overlays.entries.toList().forEach { (k, v) -> key(k) { v() } }
+        overlays.entries.toList().forEach { (k, e) ->
+            key(k) {
+                e.content(e.visible)
+                // 退场动画放完再从宿主里拿掉
+                val gone = !e.visible.targetState && !e.visible.currentState && e.visible.isIdle
+                if (gone) SideEffect { overlays.remove(k) }
+            }
+        }
         }
         }
     }
 }
+
+/** 列表项进出和让位：新行 200ms 淡入，删掉的行 150ms 淡出，下面的行用弹簧补位（不回弹）。减弱动画时只淡入淡出。 */
+private fun LazyItemScope.rowMotion(reduce: Boolean): Modifier =
+    if (reduce) Modifier.animateItem(fadeInSpec = tween(Motion.SMALL), placementSpec = null, fadeOutSpec = tween(Motion.SMALL))
+    else Modifier.animateItem(
+        fadeInSpec = tween(Motion.STATE, easing = Motion.EaseOut),
+        placementSpec = spring(dampingRatio = 1f, stiffness = Spring.StiffnessMediumLow, visibilityThreshold = IntOffset.VisibilityThreshold),
+        fadeOutSpec = tween(Motion.EXIT)
+    )
 
 private fun iconFor(tab: Tab): ImageVector = when (tab) {
     Tab.RECORD -> Icons.Default.Home
@@ -1183,6 +1327,7 @@ private fun RecordScreen(
     // 点图片看大图：当前这条的全部图片 + 点的是第几张
     var viewer by remember { mutableStateOf<Pair<List<String>, Int>?>(null) }
     val dayCount = remember(records) { records.map { dayKey(it.createdAt) }.distinct().size }
+    val reduce = LocalReduceMotion.current
     val avatarBitmap = rememberBitmap(avatarPath, 256)
     // 放大镜 = 跳到某一天：日历里只有记过东西的日子能点
     val listState = androidx.compose.foundation.lazy.rememberLazyListState()
@@ -1223,8 +1368,10 @@ private fun RecordScreen(
         item(key = "header") {
             Spacer(Modifier.height(6.dp))
             Row(verticalAlignment = Alignment.CenterVertically) {
+                val avatarSrc = remember { MutableInteractionSource() }
                 Box(
-                    modifier = Modifier.size(52.dp).clip(CircleShape).clickable(onClick = onEditProfile)
+                    modifier = Modifier.size(52.dp).pressScale(avatarSrc, haptic = true).clip(CircleShape)
+                        .clickable(interactionSource = avatarSrc, indication = androidx.compose.foundation.LocalIndication.current, onClick = onEditProfile)
                 ) {
                     if (avatarBitmap != null) {
                         Image(
@@ -1266,19 +1413,21 @@ private fun RecordScreen(
             Spacer(Modifier.height(14.dp))
         }
         if (records.isEmpty()) {
-            item(key = "empty") { EmptyRecordState(onAddRecord = onAddRecord) }
+            item(key = "empty") { Box(rowMotion(reduce)) { EmptyRecordState(onAddRecord = onAddRecord) } }
         } else {
             // 按天分组，records 已按时间倒序，groupBy 保持最新一天在前
             val groups = records.groupBy { dayKey(it.createdAt) }
             groups.forEach { (key, dayRecords) ->
-                item(key = "day-$key") { DayHeader(time = dayRecords.first().createdAt) }
+                item(key = "day-$key") { Box(rowMotion(reduce)) { DayHeader(time = dayRecords.first().createdAt) } }
                 items(dayRecords, key = { "rec-${it.id}" }) { record ->
-                    TimelineRecord(
-                        record = record,
-                        onClick = { if (record.kind != "study") onEditRecord(record) },
-                        onLongPress = { pendingAction = record },
-                        onImageClick = { i -> viewer = record.images() to i }
-                    )
+                    Box(rowMotion(reduce)) {
+                        TimelineRecord(
+                            record = record,
+                            onClick = { if (record.kind != "study") onEditRecord(record) },
+                            onLongPress = { pendingAction = record },
+                            onImageClick = { i -> viewer = record.images() to i }
+                        )
+                    }
                 }
             }
         }
@@ -1905,6 +2054,7 @@ private fun RecordItemCard(record: RecordEntry, onDelete: () -> Unit, showDate: 
 @Composable
 private fun AddRecordScreen(
     editing: RecordEntry? = null,
+    active: Boolean = true,
     onCancel: () -> Unit,
     onPublish: (text: String, newUris: List<Uri>, keptPaths: List<String>, amountCents: Long?, category: String?, moneyKind: String?) -> Unit
 ) {
@@ -1928,6 +2078,7 @@ private fun AddRecordScreen(
     }
     var nowText by remember { mutableStateOf(timeText(System.currentTimeMillis())) }
     val context = LocalContext.current
+    val haptic = LocalHapticFeedback.current
     val categories = if (moneyKind == "income") INCOME_CATEGORIES else EXPENSE_CATEGORIES
     val totalImages = newUris.size + keptPaths.size
     val galleryLauncher = rememberLauncherForActivityResult(ActivityResultContracts.PickMultipleVisualMedia(9)) { uris ->
@@ -1977,7 +2128,26 @@ private fun AddRecordScreen(
     var showDiscard by remember { mutableStateOf(false) }
     val requestClose: () -> Unit = { if (dirty) showDiscard = true else onCancel() }
     // 系统返回：有没发的内容先问一句，没有就直接关
-    BackHandler { requestClose() }
+    BackHandler(enabled = active) { requestClose() }
+    // 点了发布：复制图片/视频期间按钮里转圈，避免以为没反应又点一次
+    var publishing by remember { mutableStateOf(false) }
+    val publish: () -> Unit = {
+        if (!publishing) {
+            publishing = true
+            onPublish(
+                text.trim(), newUris.toList(), keptPaths.toList(),
+                if (recordMoney) amountCents else null,
+                if (recordMoney) category else null,
+                if (recordMoney) moneyKind else null
+            )
+        }
+    }
+    val publishLabel: @Composable (Color) -> Unit = { c ->
+        AnimatedContent(publishing, transitionSpec = { fadeIn(tween(Motion.SMALL)) togetherWith fadeOut(tween(90)) using SizeTransform(clip = false) }, label = "publish") { busy ->
+            if (busy) androidx.compose.material3.CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp, color = if (c == Color.Unspecified) androidx.compose.material3.LocalContentColor.current else c)
+            else Text(if (editing == null) "发布" else "保存", fontWeight = FontWeight.SemiBold, color = c)
+        }
+    }
     if (showDiscard) {
         ZhAlertDialog(
             onDismissRequest = { showDiscard = false },
@@ -2014,32 +2184,22 @@ private fun AddRecordScreen(
                 )
                 if (LocalBackdrop.current != null) {
                     GlassButton(
-                        onClick = {
-                            onPublish(
-                                text.trim(), newUris.toList(), keptPaths.toList(),
-                                if (recordMoney) amountCents else null,
-                                if (recordMoney) category else null,
-                                if (recordMoney) moneyKind else null
-                            )
-                        },
-                        enabled = canPublish,
+                        onClick = publish,
+                        enabled = canPublish && !publishing,
                         tint = MaterialTheme.colorScheme.primary,
                         modifier = Modifier.align(Alignment.CenterEnd)
-                    ) { Text(if (editing == null) "发布" else "保存", fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onPrimary) }
-                } else Button(
-                    onClick = {
-                        onPublish(
-                            text.trim(), newUris.toList(), keptPaths.toList(),
-                            if (recordMoney) amountCents else null,
-                            if (recordMoney) category else null,
-                            if (recordMoney) moneyKind else null
-                        )
-                    },
-                    enabled = canPublish,
-                    shape = RoundedCornerShape(50),
-                    contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 22.dp, vertical = 8.dp),
-                    modifier = Modifier.align(Alignment.CenterEnd)
-                ) { Text(if (editing == null) "发布" else "保存", fontWeight = FontWeight.SemiBold) }
+                    ) { publishLabel(MaterialTheme.colorScheme.onPrimary) }
+                } else {
+                    val pubSrc = remember { MutableInteractionSource() }
+                    Button(
+                        onClick = publish,
+                        enabled = canPublish && !publishing,
+                        interactionSource = pubSrc,
+                        shape = RoundedCornerShape(50),
+                        contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 22.dp, vertical = 8.dp),
+                        modifier = Modifier.align(Alignment.CenterEnd).pressScale(pubSrc)
+                    ) { publishLabel(Color.Unspecified) }
+                }
             }
 
             Column(
@@ -2129,35 +2289,63 @@ private fun AddRecordScreen(
                             }
                             Spacer(Modifier.width(8.dp))
                             Text("记一笔账", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
-                            Switch(checked = recordMoney, onCheckedChange = { recordMoney = it })
+                            Switch(checked = recordMoney, onCheckedChange = {
+                                haptic.performHapticFeedback(if (it) HapticFeedbackType.ToggleOn else HapticFeedbackType.ToggleOff)
+                                recordMoney = it
+                            })
                         }
-                        if (recordMoney) {
-                            Row(
+                        // 打开「记一笔账」：先让出空间再淡入；关掉时收起
+                        AnimatedVisibility(
+                            visible = recordMoney,
+                            enter = expandVertically(motion(spring(dampingRatio = 1f, stiffness = 500f)), expandFrom = Alignment.Top) + fadeIn(tween(Motion.SMALL, delayMillis = 60)),
+                            exit = shrinkVertically(motion(tween(180, easing = Motion.EaseOut))) + fadeOut(tween(100))
+                        ) {
+                        Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                            // 支出/收入：底下一块高亮滑过去，不是跳过去
+                            BoxWithConstraints(
                                 Modifier
                                     .fillMaxWidth()
                                     .clip(RoundedCornerShape(14.dp))
                                     .background(MaterialTheme.colorScheme.surfaceVariant)
                                     .padding(3.dp)
                             ) {
-                                listOf("expense" to "支出", "income" to "收入").forEach { (kind, label) ->
-                                    val sel = moneyKind == kind
-                                    Box(
-                                        modifier = Modifier
-                                            .weight(1f)
-                                            .clip(RoundedCornerShape(11.dp))
-                                            .background(if (sel) MaterialTheme.colorScheme.surface else Color.Transparent)
-                                            .clickable {
-                                                moneyKind = kind
-                                                category = if (kind == "income") INCOME_CATEGORIES[0] else EXPENSE_CATEGORIES[0]
-                                            }
-                                            .padding(vertical = 10.dp),
-                                        contentAlignment = Alignment.Center
-                                    ) {
-                                        Text(
-                                            label,
-                                            fontWeight = if (sel) FontWeight.Bold else FontWeight.Normal,
-                                            color = if (sel) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant
+                                val segW = maxWidth / 2
+                                val segX by animateDpAsState(
+                                    if (moneyKind == "income") segW else 0.dp,
+                                    motion(spring(dampingRatio = 1f, stiffness = 700f)),
+                                    label = "seg"
+                                )
+                                Box(
+                                    Modifier
+                                        .offset { IntOffset(segX.roundToPx(), 0) }
+                                        .width(segW)
+                                        .height(44.dp)
+                                        .clip(RoundedCornerShape(11.dp))
+                                        .background(MaterialTheme.colorScheme.surface)
+                                )
+                                Row(Modifier.fillMaxWidth()) {
+                                    listOf("expense" to "支出", "income" to "收入").forEach { (kind, label) ->
+                                        val sel = moneyKind == kind
+                                        val segFg by animateColorAsState(
+                                            if (sel) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant,
+                                            tween(Motion.SMALL), label = "segFg"
                                         )
+                                        Box(
+                                            modifier = Modifier
+                                                .weight(1f)
+                                                .height(44.dp)
+                                                .clip(RoundedCornerShape(11.dp))
+                                                .clickable {
+                                                    if (moneyKind != kind) {
+                                                        haptic.performHapticFeedback(HapticFeedbackType.SegmentTick)
+                                                        moneyKind = kind
+                                                        category = if (kind == "income") INCOME_CATEGORIES[0] else EXPENSE_CATEGORIES[0]
+                                                    }
+                                                },
+                                            contentAlignment = Alignment.Center
+                                        ) {
+                                            Text(label, fontWeight = if (sel) FontWeight.Bold else FontWeight.Normal, color = segFg)
+                                        }
                                     }
                                 }
                             }
@@ -2197,21 +2385,26 @@ private fun AddRecordScreen(
                                 val onFill = if (moneyKind == "expense") MaterialTheme.colorScheme.onSecondary else MaterialTheme.colorScheme.onPrimary
                                 categories.forEach { c ->
                                     val sel = category == c
+                                    val catSrc = remember { MutableInteractionSource() }
+                                    val catBg by animateColorAsState(if (sel) fill else MaterialTheme.colorScheme.surface, tween(Motion.SMALL), label = "catBg")
                                     Surface(
                                         onClick = { category = c },
+                                        interactionSource = catSrc,
+                                        modifier = Modifier.pressScale(catSrc),
                                         shape = RoundedCornerShape(50),
-                                        color = if (sel) fill else MaterialTheme.colorScheme.surface,
+                                        color = catBg,
                                         border = if (sel) null else BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
                                     ) {
                                         Text(
                                             c,
                                             style = MaterialTheme.typography.bodyMedium,
                                             color = if (sel) onFill else MaterialTheme.colorScheme.onSurface,
-                                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 9.dp)
+                                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp)
                                         )
                                     }
                                 }
                             }
+                        }
                         }
                     }
                 }
@@ -2277,11 +2470,17 @@ private fun BottomPill(label: String, icon: ImageVector, onClick: () -> Unit) {
 
 @Composable
 private fun ChoiceChip(label: String, selected: Boolean, onClick: () -> Unit) {
+    val src = remember { MutableInteractionSource() }
+    val haptic = LocalHapticFeedback.current
+    val bg by animateColorAsState(if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant, tween(Motion.SMALL), label = "chipBg")
+    val fg by animateColorAsState(if (selected) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant, tween(Motion.SMALL), label = "chipFg")
     Surface(
-        onClick = onClick,
+        onClick = { if (!selected) haptic.performHapticFeedback(HapticFeedbackType.SegmentTick); onClick() },
+        interactionSource = src,
+        modifier = Modifier.pressScale(src),
         shape = RoundedCornerShape(16.dp),
-        color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant,
-        contentColor = if (selected) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant
+        color = bg,
+        contentColor = fg
     ) {
         Text(label, style = MaterialTheme.typography.labelLarge, modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp))
     }
@@ -2290,11 +2489,17 @@ private fun ChoiceChip(label: String, selected: Boolean, onClick: () -> Unit) {
 /** 主题颜色选择：左边一个色点，后面是颜色名，选中态用当前主色填充。 */
 @Composable
 private fun PaletteChip(label: String, dotColor: Color, selected: Boolean, onClick: () -> Unit) {
+    val src = remember { MutableInteractionSource() }
+    val haptic = LocalHapticFeedback.current
+    val bg by animateColorAsState(if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant, tween(Motion.SMALL), label = "paletteBg")
+    val fg by animateColorAsState(if (selected) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant, tween(Motion.SMALL), label = "paletteFg")
     Surface(
-        onClick = onClick,
+        onClick = { if (!selected) haptic.performHapticFeedback(HapticFeedbackType.SegmentTick); onClick() },
+        interactionSource = src,
+        modifier = Modifier.pressScale(src),
         shape = RoundedCornerShape(16.dp),
-        color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant,
-        contentColor = if (selected) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant
+        color = bg,
+        contentColor = fg
     ) {
         Row(
             modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
@@ -2333,9 +2538,11 @@ private fun WordsScreen(
     var showAddCard by remember { mutableStateOf(false) }
     var showBookPicker by remember { mutableStateOf(false) }
     var detailWord by remember { mutableStateOf<PackWordLite?>(null) }
-    var showUnknownBook by remember { mutableStateOf(false) }
+    var showUnknownBook by rememberSaveable { mutableStateOf(false) }
     val total = packWords.size
     val wordMap = remember(packWords) { packWords.associateBy { it.headword } }
+    val haptic = LocalHapticFeedback.current
+    val reduceMotion = LocalReduceMotion.current
 
     // 统计：待复习 / 今日 / 学习天数；每次进出学习刷新一下「现在」
     val nowKey = remember(study.inStudy) { System.currentTimeMillis() }
@@ -2423,9 +2630,11 @@ private fun WordsScreen(
         var progress by remember(lite.headword) { mutableStateOf<WordProgress?>(null) }
         LaunchedEffect(lite.headword) { progress = withContext(Dispatchers.IO) { progressDao.get(lite.headword) } }
         val unknownEntry = unknownWords.firstOrNull { it.headword == lite.headword }
-        val warnColor = warnColor()
+        val warnColor = warnTone()
 
         fun answer(known: Boolean) {
+            // 结果触感和释义出现在同一帧
+            haptic.performHapticFeedback(if (known) HapticFeedbackType.Confirm else HapticFeedbackType.Reject)
             if (known) study.known += 1 else study.unknown += 1
             study.showMeaning = true
             saveProgress()
@@ -2484,8 +2693,10 @@ private fun WordsScreen(
                 Text(counter, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.align(Alignment.CenterEnd))
             }
             Spacer(Modifier.height(8.dp))
+            // 进度条平滑前进，不是一格一格跳
+            val fracAnim by animateFloatAsState(frac, motion(spring(dampingRatio = 1f, stiffness = Spring.StiffnessLow)), label = "studyProgress")
             LinearProgressIndicator(
-                progress = { frac },
+                progress = { fracAnim },
                 modifier = Modifier.fillMaxWidth().height(8.dp).clip(RoundedCornerShape(50)),
                 color = MaterialTheme.colorScheme.primary,
                 trackColor = MaterialTheme.colorScheme.surfaceVariant,
@@ -2493,16 +2704,24 @@ private fun WordsScreen(
             )
             Spacer(Modifier.height(12.dp))
             val wrong = progress?.wrongCount ?: 0
-            if (wrong > 0 || (study.mode == StudyMode.UNKNOWN && unknownEntry != null)) {
-                Surface(color = warnColor.copy(alpha = .14f), shape = RoundedCornerShape(50)) {
-                    Text(
-                        if (study.mode == StudyMode.UNKNOWN) "生词 · 已认识 ${unknownEntry?.knownCount ?: 0}/${WordStudy.UNKNOWN_GRADUATE}" else "记错 $wrong 次 · 优先复习",
-                        style = MaterialTheme.typography.labelLarge, color = warnColor,
-                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 5.dp)
-                    )
+            // 「记错 N 次」胶囊：展开出现，不把卡片一下子推下去
+            AnimatedVisibility(
+                visible = wrong > 0 || (study.mode == StudyMode.UNKNOWN && unknownEntry != null),
+                enter = fadeIn(tween(Motion.SMALL)) + expandVertically(Motion.settle()),
+                exit = fadeOut(tween(100)) + shrinkVertically(tween(Motion.EXIT, easing = Motion.EaseOut))
+            ) {
+                Column {
+                    Surface(color = warnColor.copy(alpha = .14f), shape = RoundedCornerShape(50)) {
+                        Text(
+                            if (study.mode == StudyMode.UNKNOWN) "生词 · 已认识 ${unknownEntry?.knownCount ?: 0}/${WordStudy.UNKNOWN_GRADUATE}" else "记错 $wrong 次 · 优先复习",
+                            style = MaterialTheme.typography.labelLarge, color = warnColor,
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 5.dp)
+                        )
+                    }
+                    Spacer(Modifier.height(10.dp))
                 }
-                Spacer(Modifier.height(10.dp))
             }
+            Box(Modifier.fillMaxWidth()) {
             GlassCard(
                 color = MaterialTheme.colorScheme.surface,
                 shape = RoundedCornerShape(28.dp),
@@ -2510,44 +2729,85 @@ private fun WordsScreen(
                 onClick = { if (study.showMeaning) detailWord = lite }
             ) {
                 Column(
-                    Modifier.fillMaxWidth().heightIn(min = 330.dp).padding(22.dp),
+                    Modifier.fillMaxWidth().heightIn(min = 330.dp)
+                        .animateContentSize(motion(spring(dampingRatio = 1f, stiffness = Spring.StiffnessMediumLow)))
+                        .padding(22.dp),
                     verticalArrangement = Arrangement.spacedBy(10.dp),
                     horizontalAlignment = Alignment.CenterHorizontally
                 ) {
                     Spacer(Modifier.height(36.dp))
-                    Text(lite.headword, style = MaterialTheme.typography.displayMedium, fontWeight = FontWeight.Bold, textAlign = TextAlign.Center)
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        if (!lite.phonetic.isNullOrBlank()) {
-                            Text("/${lite.phonetic}/", style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        }
-                        IconButton(onClick = { speak(lite.headword) }) {
-                            Icon(Icons.Default.VolumeUp, contentDescription = "发音", tint = MaterialTheme.colorScheme.primary)
+                    // 换词：卡片不动，只换里面的词，新词从右边 1/6 处进来
+                    AnimatedContent(
+                        targetState = lite,
+                        contentKey = { it.headword },
+                        transitionSpec = {
+                            if (reduceMotion) fadeIn(tween(Motion.SMALL)) togetherWith fadeOut(tween(100))
+                            else (slideInHorizontally(tween(Motion.STATE, easing = Motion.EaseOut)) { it / 6 } + fadeIn(tween(Motion.STATE)))
+                                .togetherWith(slideOutHorizontally(tween(Motion.EXIT, easing = Motion.EaseOut)) { -it / 6 } + fadeOut(tween(Motion.EXIT)))
+                                .using(SizeTransform(clip = false))
+                        },
+                        label = "word"
+                    ) { w ->
+                        Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                            Text(w.headword, style = MaterialTheme.typography.displayMedium, fontWeight = FontWeight.Bold, textAlign = TextAlign.Center)
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                if (!w.phonetic.isNullOrBlank()) {
+                                    Text("/${w.phonetic}/", style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                }
+                                IconButton(onClick = { speak(w.headword) }) {
+                                    Icon(Icons.Default.VolumeUp, contentDescription = "发音", tint = MaterialTheme.colorScheme.primary)
+                                }
+                            }
                         }
                     }
                     Spacer(Modifier.height(24.dp))
                     HorizontalDivider()
                     Spacer(Modifier.height(6.dp))
-                    if (study.showMeaning) {
-                        Text(lite.meaning.replace("；", "\n"), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold, textAlign = TextAlign.Center)
-                        val forms = full?.forms.orEmpty().filter { it.first != "原形" }
-                        if (forms.isNotEmpty()) {
-                            Text(forms.joinToString(" · ") { it.second }.let { it }, style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant, textAlign = TextAlign.Center)
+                    // 释义：容器先定尺寸（animateContentSize），内容晚 40ms 淡入
+                    AnimatedContent(
+                        targetState = if (study.showMeaning) lite else null,
+                        contentKey = { it?.headword },
+                        transitionSpec = {
+                            if (reduceMotion) fadeIn(tween(Motion.SMALL)) togetherWith fadeOut(tween(100))
+                            else (fadeIn(tween(180, delayMillis = 40)) + slideInVertically(tween(Motion.STATE, easing = Motion.EaseOut)) { 12 })
+                                .togetherWith(fadeOut(tween(100)))
+                                .using(SizeTransform(clip = false))
+                        },
+                        label = "meaning"
+                    ) { shown ->
+                        Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                            if (shown != null) {
+                                Text(shown.meaning.replace("；", "\n"), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold, textAlign = TextAlign.Center)
+                                val forms = wordMap[shown.headword]?.forms.orEmpty().filter { it.first != "原形" }
+                                if (forms.isNotEmpty()) {
+                                    Text(forms.joinToString(" · ") { it.second }, style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant, textAlign = TextAlign.Center)
+                                }
+                                Text("点卡片看详情", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            } else {
+                                Text(
+                                    "先想一想它的意思\n点「认识」或「不认识」后显示",
+                                    style = MaterialTheme.typography.bodyLarge,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    textAlign = TextAlign.Center,
+                                    modifier = Modifier.padding(vertical = 18.dp)
+                                )
+                            }
                         }
-                        Text("点卡片看详情", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    } else {
-                        Text(
-                            "先想一想它的意思\n点「认识」或「不认识」后显示",
-                            style = MaterialTheme.typography.bodyLarge,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            textAlign = TextAlign.Center,
-                            modifier = Modifier.padding(vertical = 18.dp)
-                        )
                     }
                 }
             }
+            }
             Spacer(Modifier.weight(1f))
             val glassUi = LocalBackdrop.current != null
-            if (!study.showMeaning) {
+            val last = if (isReview) study.reviewPos + 1 >= study.queue.size && study.mode == StudyMode.UNKNOWN else index + 1 >= total
+            // 认识/不认识 → 下一个：同一块区域原地交叉淡化，不是一下子换掉
+            AnimatedContent(
+                targetState = study.showMeaning,
+                transitionSpec = { fadeIn(tween(Motion.SMALL, delayMillis = 30)) togetherWith fadeOut(tween(90)) using SizeTransform(clip = false) },
+                label = "answerButtons"
+            ) { showing ->
+            Column {
+            if (!showing) {
                 Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                     if (glassUi) {
                         GlassButton(onClick = { answer(false) }, modifier = Modifier.weight(1f).height(54.dp)) {
@@ -2557,16 +2817,20 @@ private fun WordsScreen(
                             Text("认识", fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onPrimary)
                         }
                     } else {
+                        val noSrc = remember { MutableInteractionSource() }
+                        val yesSrc = remember { MutableInteractionSource() }
                         OutlinedButton(
                             onClick = { answer(false) },
-                            modifier = Modifier.weight(1f).height(54.dp),
+                            modifier = Modifier.weight(1f).height(54.dp).pressScale(noSrc),
+                            interactionSource = noSrc,
                             shape = RoundedCornerShape(50),
                             border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
                             colors = ButtonDefaults.outlinedButtonColors(contentColor = warnColor)
                         ) { Text("不认识", fontWeight = FontWeight.SemiBold) }
                         Button(
                             onClick = { answer(true) },
-                            modifier = Modifier.weight(1f).height(54.dp),
+                            modifier = Modifier.weight(1f).height(54.dp).pressScale(yesSrc),
+                            interactionSource = yesSrc,
                             shape = RoundedCornerShape(50),
                             colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
                         ) { Text("认识", fontWeight = FontWeight.SemiBold) }
@@ -2579,19 +2843,28 @@ private fun WordsScreen(
                     textAlign = TextAlign.Center, modifier = Modifier.fillMaxWidth()
                 )
             } else {
-                val last = if (isReview) study.reviewPos + 1 >= study.queue.size && study.mode == StudyMode.UNKNOWN else index + 1 >= total
+                // 「下一个 → 完成」在同一个按钮里换字
+                val nextLabel: @Composable () -> Unit = {
+                    AnimatedContent(last, transitionSpec = { fadeIn(tween(Motion.SMALL)) togetherWith fadeOut(tween(90)) }, label = "nextLabel") { isLast ->
+                        Text(if (isLast) "完成" else "下一个", fontWeight = FontWeight.SemiBold, color = if (glassUi) MaterialTheme.colorScheme.onPrimary else androidx.compose.ui.graphics.Color.Unspecified)
+                    }
+                }
                 if (glassUi) {
                     GlassButton(onClick = { next() }, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.fillMaxWidth().height(54.dp)) {
-                        Text(if (last) "完成" else "下一个", fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onPrimary)
+                        nextLabel()
                     }
                 } else {
+                    val nextSrc = remember { MutableInteractionSource() }
                     Button(
                         onClick = { next() },
-                        modifier = Modifier.fillMaxWidth().height(54.dp),
+                        modifier = Modifier.fillMaxWidth().height(54.dp).pressScale(nextSrc),
+                        interactionSource = nextSrc,
                         shape = RoundedCornerShape(50),
                         colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
-                    ) { Text(if (last) "完成" else "下一个", fontWeight = FontWeight.SemiBold) }
+                    ) { nextLabel() }
                 }
+            }
+            }
             }
             Spacer(Modifier.height(20.dp))
         }
@@ -2627,6 +2900,7 @@ private fun WordsScreen(
         } else {
             items(unknownWords, key = { "unknown-${it.id}" }) { word ->
                 var expanded by remember { mutableStateOf(false) }
+                Box(rowMotion(reduceMotion)) {
                 SwipeToRemove(onRemove = {
                     scope.launch {
                         withContext(Dispatchers.IO) { unknownDao.deleteByHeadword(word.headword) }
@@ -2645,16 +2919,27 @@ private fun WordsScreen(
                                     style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
                             }
+                            val pillSrc = remember { MutableInteractionSource() }
                             Surface(
+                                onClick = { expanded = !expanded },
+                                interactionSource = pillSrc,
                                 color = MaterialTheme.colorScheme.primary.copy(alpha = .14f),
                                 shape = RoundedCornerShape(50),
-                                modifier = Modifier.clip(RoundedCornerShape(50)).clickable { expanded = !expanded }
+                                modifier = Modifier.pressScale(pillSrc)
                             ) {
-                                Text(if (expanded) "收起" else "看意思", color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelLarge, modifier = Modifier.padding(horizontal = 14.dp, vertical = 7.dp))
+                                AnimatedContent(expanded, transitionSpec = { fadeIn(tween(Motion.SMALL)) togetherWith fadeOut(tween(90)) using SizeTransform(clip = false) }, label = "pill") { ex ->
+                                    Text(if (ex) "收起" else "看意思", color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelLarge, modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp))
+                                }
                             }
                         }
-                        if (expanded) Text(word.meaning.replace("；", "\n"))
+                        // 展开释义：先让出空间再淡入，不是直接冒出来
+                        AnimatedVisibility(
+                            visible = expanded,
+                            enter = expandVertically(spring(dampingRatio = 1f, stiffness = 500f)) + fadeIn(tween(Motion.SMALL, delayMillis = 50)),
+                            exit = shrinkVertically(tween(Motion.EXIT, easing = Motion.EaseOut)) + fadeOut(tween(80))
+                        ) { Text(word.meaning.replace("；", "\n")) }
                     }
+                }
                 }
                 }
             }
@@ -2769,7 +3054,7 @@ private fun WordsScreen(
             item { EmptyCard("还没有卡片", "点上面 + 添加第一张卡片") }
         } else {
             items(cards, key = { "card-${it.id}" }) { card ->
-                GlassCard(color = MaterialTheme.colorScheme.surface, shape = RoundedCornerShape(18.dp)) {
+                GlassCard(color = MaterialTheme.colorScheme.surface, shape = RoundedCornerShape(18.dp), modifier = rowMotion(reduceMotion)) {
                     ListItem(
                         colors = ListItemDefaults.colors(containerColor = Color.Transparent),
                         trailingContent = {
@@ -2805,14 +3090,17 @@ private fun WordsScreen(
                                 val sel = b.id == bookId
                                 val idx = SettingsStore.getBookIndex(context, b.id)
                                 val pct = if (b.count == 0) 0f else (idx.toFloat() / b.count).coerceIn(0f, 1f)
-                                val fg = if (sel) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurface
+                                val fg by animateColorAsState(if (sel) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurface, tween(Motion.SMALL), label = "bookFg")
+                                val bookBg by animateColorAsState(if (sel) MaterialTheme.colorScheme.primary.copy(alpha = .88f) else MaterialTheme.colorScheme.onSurface.copy(alpha = .07f), tween(Motion.SMALL), label = "bookBg")
+                                val bookSrc = remember { MutableInteractionSource() }
                                 Column(
                                     Modifier
                                         .weight(1f)
+                                        .pressScale(bookSrc)
                                         .clip(RoundedCornerShape(18.dp))
-                                        .background(if (sel) MaterialTheme.colorScheme.primary.copy(alpha = .88f) else MaterialTheme.colorScheme.onSurface.copy(alpha = .07f))
+                                        .background(bookBg)
                                         .border(1.dp, Color.White.copy(alpha = if (sel) 0f else .08f), RoundedCornerShape(18.dp))
-                                        .clickable {
+                                        .clickable(interactionSource = bookSrc, indication = androidx.compose.foundation.LocalIndication.current) {
                                             showBookPicker = false
                                             if (!sel) onChangeBook(b.id)
                                         }
@@ -2821,7 +3109,10 @@ private fun WordsScreen(
                                 ) {
                                     Row(verticalAlignment = Alignment.CenterVertically) {
                                         Text(b.shortName, fontWeight = FontWeight.Bold, color = fg, modifier = Modifier.weight(1f))
-                                        if (sel) Icon(Icons.Default.Check, null, tint = fg, modifier = Modifier.size(16.dp))
+                                        // 对勾是小图标，允许轻轻弹一下
+                                        AnimatedVisibility(sel, enter = scaleIn(spring(dampingRatio = 0.5f, stiffness = 600f), initialScale = .6f) + fadeIn(tween(100)), exit = fadeOut(tween(100))) {
+                                            Icon(Icons.Default.Check, null, tint = fg, modifier = Modifier.size(16.dp))
+                                        }
                                     }
                                     Text(if (idx > 0) "学到 ${idx + 1} / %,d".format(b.count) else "%,d 词".format(b.count), style = MaterialTheme.typography.labelMedium, color = fg.copy(alpha = .72f))
                                     Box(Modifier.fillMaxWidth().height(4.dp).clip(RoundedCornerShape(50)).background(fg.copy(alpha = .14f))) {
@@ -2857,7 +3148,7 @@ private fun WordsScreen(
 private fun StatColumn(label: String, value: String, highlight: Boolean = false) {
     Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
         Text(label, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        Text(value, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold, color = if (highlight) warnColor() else MaterialTheme.colorScheme.onSurface)
+        Text(value, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold, color = if (highlight) warnTone() else MaterialTheme.colorScheme.onSurface)
     }
 }
 
@@ -3306,7 +3597,7 @@ private fun DataScreen(
             onMessage(result.fold({ "数据已导入" }, { "导入失败：${it.message ?: "未知错误"}" }))
         }
     }
-    var page by remember { mutableStateOf("main") }   // main | settings | privacy
+    var page by rememberSaveable { mutableStateOf("main") }   // main | settings | privacy | about
     var showUpdate by remember { mutableStateOf(false) }
     if (showUpdate) UpdateDialog(onDismiss = { showUpdate = false })
     if (page != "main") BackHandler { page = "main" }
@@ -3609,7 +3900,14 @@ private fun DataScreen(
 /** 「我的」页里的一行入口：图标 + 标题 + 说明 + 右箭头。 */
 @Composable
 private fun MineRow(icon: ImageVector, title: String, sub: String, onClick: () -> Unit) {
-    Row(Modifier.fillMaxWidth().clickable(onClick = onClick).padding(horizontal = 18.dp, vertical = 14.dp), verticalAlignment = Alignment.CenterVertically) {
+    // 整行只缩到 0.985，避免整行抖动
+    val src = remember { MutableInteractionSource() }
+    Row(
+        Modifier.fillMaxWidth().pressScale(src, pressed = 0.985f)
+            .clickable(interactionSource = src, indication = androidx.compose.foundation.LocalIndication.current, onClick = onClick)
+            .padding(horizontal = 18.dp, vertical = 14.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
         Box(Modifier.size(38.dp).clip(RoundedCornerShape(12.dp)).background(MaterialTheme.colorScheme.primary.copy(alpha = .16f)), contentAlignment = Alignment.Center) {
             Icon(icon, null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(20.dp))
         }
