@@ -11,8 +11,8 @@ android {
         applicationId = "com.swenhao10.localfirst"
         minSdk = 26
         targetSdk = 35
-        versionCode = 7
-        versionName = "0.6.1"
+        versionCode = 8
+        versionName = "0.6.2"
     }
     // 固定签名：keystore/zhixing-debug.jks 就是标准的 Android debug 证书（口令 android），
     // 放进仓库是为了让“任何机器重新打包出来的 APK 签名都一样”，可以直接覆盖安装，不用卸载重装。

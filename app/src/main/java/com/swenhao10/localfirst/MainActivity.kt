@@ -223,6 +223,9 @@ import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.material3.ProvideTextStyle
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.foundation.layout.imePadding
+import androidx.compose.runtime.mutableStateMapOf
+import androidx.compose.runtime.SideEffect
+import androidx.compose.runtime.key
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -329,45 +332,69 @@ private fun ZhAlertDialog(
     title: (@Composable () -> Unit)? = null,
     text: (@Composable () -> Unit)? = null
 ) {
+    val host = LocalOverlay.current
+    val panel: @Composable () -> Unit = { ZhSheet(onDismissRequest, confirmButton, dismissButton, title, text) }
+    if (host == null) {
+        Dialog(onDismissRequest = onDismissRequest, properties = DialogProperties(usePlatformDefaultWidth = false)) { panel() }
+        return
+    }
+    val id = remember { Any() }
+    SideEffect { host[id] = panel }
+    DisposableEffect(id) { onDispose { host.remove(id) } }
+}
+
+/** 底部浮起的玻璃面板：压暗背后 + 真玻璃（模糊折射背景）+ 细描边 + 拖动条。 */
+@Composable
+private fun ZhSheet(
+    onDismissRequest: () -> Unit,
+    confirmButton: @Composable () -> Unit,
+    dismissButton: (@Composable () -> Unit)?,
+    title: (@Composable () -> Unit)?,
+    text: (@Composable () -> Unit)?
+) {
     val dark = MaterialTheme.colorScheme.background.red < 0.5f
+    val glassOn = LocalBackdrop.current != null
     var shown by remember { mutableStateOf(false) }
     LaunchedEffect(Unit) { shown = true }
-    Dialog(onDismissRequest = onDismissRequest, properties = DialogProperties(usePlatformDefaultWidth = false)) {
-        Box(
-            Modifier.fillMaxSize().clickable(interactionSource = remember { MutableInteractionSource() }, indication = null, onClick = onDismissRequest),
-            contentAlignment = Alignment.BottomCenter
-        ) {
-            AnimatedVisibility(shown, enter = slideInVertically { it / 3 } + fadeIn()) {
-                val shape = RoundedCornerShape(28.dp)
-                Column(
-                    Modifier
-                        .padding(horizontal = 12.dp, vertical = 16.dp)
-                        .navigationBarsPadding()
-                        .imePadding()
-                        .fillMaxWidth()
-                        .heightIn(max = 640.dp)
-                        .clip(shape)
-                        .background(if (dark) Color(0xF2161D1C) else Color(0xF7FBFDFC))
-                        .border(1.dp, (if (dark) Color.White else Color.Black).copy(alpha = .08f), shape)
-                        .clickable(interactionSource = remember { MutableInteractionSource() }, indication = null) {}
-                        .padding(horizontal = 22.dp)
-                        .padding(top = 10.dp, bottom = 14.dp)
-                ) {
-                    Box(Modifier.align(Alignment.CenterHorizontally).size(36.dp, 4.dp).clip(RoundedCornerShape(50)).background(MaterialTheme.colorScheme.onSurface.copy(alpha = .18f)))
-                    Spacer(Modifier.height(14.dp))
-                    if (title != null) {
-                        ProvideTextStyle(MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold)) { title() }
-                        Spacer(Modifier.height(10.dp))
+    BackHandler(onBack = onDismissRequest)
+    Box(
+        Modifier.fillMaxSize()
+            .background(Color.Black.copy(alpha = if (dark) .45f else .28f))
+            .clickable(interactionSource = remember { MutableInteractionSource() }, indication = null, onClick = onDismissRequest),
+        contentAlignment = Alignment.BottomCenter
+    ) {
+        AnimatedVisibility(shown, enter = slideInVertically { it / 3 } + fadeIn()) {
+            val shape = RoundedCornerShape(30.dp)
+            Column(
+                Modifier
+                    .padding(horizontal = 12.dp, vertical = 16.dp)
+                    .navigationBarsPadding()
+                    .imePadding()
+                    .fillMaxWidth()
+                    .heightIn(max = 640.dp)
+                    .then(
+                        if (glassOn) Modifier.glass(shape, if (dark) Color(0x8C182120) else Color(0xA6FFFFFF), blurDp = 24f, lensDp = 18f)
+                        else Modifier.clip(shape).background(if (dark) Color(0xF2161D1C) else Color(0xF7FBFDFC))
+                    )
+                    .border(1.dp, Color.White.copy(alpha = if (dark) .14f else .5f), shape)
+                    .clickable(interactionSource = remember { MutableInteractionSource() }, indication = null) {}
+                    .padding(horizontal = 22.dp)
+                    .padding(top = 10.dp, bottom = 14.dp)
+            ) {
+                Box(Modifier.align(Alignment.CenterHorizontally).size(36.dp, 4.dp).clip(RoundedCornerShape(50)).background(MaterialTheme.colorScheme.onSurface.copy(alpha = .25f)))
+                Spacer(Modifier.height(14.dp))
+                if (title != null) {
+                    ProvideTextStyle(MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold)) { title() }
+                    Spacer(Modifier.height(10.dp))
+                }
+                if (text != null) {
+                    Box(Modifier.weight(1f, fill = false).verticalScroll(rememberScrollState())) {
+                        ProvideTextStyle(MaterialTheme.typography.bodyMedium) { text() }
                     }
-                    if (text != null) {
-                        Box(Modifier.weight(1f, fill = false).verticalScroll(rememberScrollState())) {
-                            ProvideTextStyle(MaterialTheme.typography.bodyMedium) { text() }
-                        }
-                    }
-                    Row(Modifier.fillMaxWidth().padding(top = 8.dp), horizontalArrangement = Arrangement.End, verticalAlignment = Alignment.CenterVertically) {
-                        dismissButton?.invoke()
-                        confirmButton()
-                    }
+                }
+                Row(Modifier.fillMaxWidth().padding(top = 8.dp), horizontalArrangement = Arrangement.End, verticalAlignment = Alignment.CenterVertically) {
+                    dismissButton?.invoke()
+                    confirmButton()
                 }
             }
         }
@@ -546,6 +573,8 @@ private fun paletteFor(id: String, dark: Boolean): androidx.compose.material3.Co
 private val LocalGlass = staticCompositionLocalOf { false }
 /** 玻璃要“透过去”看到的那层背景；null = 没开玻璃，退回普通半透明。 */
 private val LocalBackdrop = staticCompositionLocalOf<LayerBackdrop?> { null }
+/** 弹窗宿主：ZhAlertDialog 把自己挂到这里，画在主界面最上层。 */
+private val LocalOverlay = staticCompositionLocalOf<androidx.compose.runtime.snapshots.SnapshotStateMap<Any, @Composable () -> Unit>?> { null }
 /** 自定义背景图路径；null = 默认渐变。 */
 private val LocalBgPath = staticCompositionLocalOf<String?> { null }
 
@@ -827,7 +856,9 @@ private fun LocalFirstApp(db: AppDatabase) {
     val baseScheme = paletteFor(paletteId, useDarkTheme)
     MaterialTheme(colorScheme = if (glassOn) glassScheme(baseScheme, useDarkTheme) else baseScheme) {
         val layerBackdrop = rememberLayerBackdrop()
+        val overlays = remember { mutableStateMapOf<Any, @Composable () -> Unit>() }
         CompositionLocalProvider(
+            LocalOverlay provides overlays,
             LocalGlass provides glassOn,
             LocalBackdrop provides (if (glassOn) layerBackdrop else null),
             LocalBgPath provides bgPath
@@ -1044,6 +1075,8 @@ private fun LocalFirstApp(db: AppDatabase) {
                 }
             )
         }
+        // 弹窗都画在这一层：跟页面在同一个窗口里，玻璃才能透出背景
+        overlays.entries.toList().forEach { (k, v) -> key(k) { v() } }
         }
         }
     }
@@ -2619,7 +2652,8 @@ private fun WordsScreen(
                                     Modifier
                                         .weight(1f)
                                         .clip(RoundedCornerShape(18.dp))
-                                        .background(if (sel) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface.copy(alpha = .06f))
+                                        .background(if (sel) MaterialTheme.colorScheme.primary.copy(alpha = .88f) else MaterialTheme.colorScheme.onSurface.copy(alpha = .07f))
+                                        .border(1.dp, Color.White.copy(alpha = if (sel) 0f else .08f), RoundedCornerShape(18.dp))
                                         .clickable {
                                             showBookPicker = false
                                             if (!sel) onChangeBook(b.id)
@@ -2795,30 +2829,38 @@ private fun OverviewScreen(records: List<RecordEntry>, wordCount: Int, modifier:
             Text("看看这个月都记了什么、花了多少", color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
         item {
-            // 本月结余：深色大卡 + 一条收支比例条
+            // 本月结余：玻璃主题下是玻璃大卡，关掉玻璃时是主色大卡
             val glass = LocalGlass.current
             val primary = MaterialTheme.colorScheme.primary
-            Card(colors = CardDefaults.cardColors(containerColor = if (glass) Color.Transparent else primary), shape = RoundedCornerShape(24.dp)) {
+            val fg = if (glass) MaterialTheme.colorScheme.onSurface else Color.White
+            val sub = if (glass) MaterialTheme.colorScheme.onSurfaceVariant else Color.White.copy(alpha = .85f)
+            val balance = income - expense
+            GlassCard(color = if (glass) MaterialTheme.colorScheme.surface else primary, shape = RoundedCornerShape(26.dp)) {
                 Column(
                     Modifier.fillMaxWidth()
-                        .then(if (glass) Modifier.background(Brush.linearGradient(listOf(primary, Color(0xFF6A8FC8), Color(0xFF8A72D6)))) else Modifier)
-                        .padding(20.dp),
+                        .then(if (glass) Modifier.border(1.dp, Color.White.copy(alpha = .12f), RoundedCornerShape(26.dp)) else Modifier)
+                        .padding(22.dp),
                     verticalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
-                    Text("本月结余", color = Color.White.copy(alpha = .85f), style = MaterialTheme.typography.labelLarge)
-                    Text(formatMoney(income - expense), style = MaterialTheme.typography.displaySmall, fontWeight = FontWeight.Bold, color = Color.White)
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text("本月结余", color = sub, style = MaterialTheme.typography.labelLarge, modifier = Modifier.weight(1f))
+                        Surface(color = (if (glass) primary else Color.White).copy(alpha = .16f), shape = RoundedCornerShape(50)) {
+                            Text(if (balance >= 0) "有结余" else "超支", color = if (glass) primary else Color.White, style = MaterialTheme.typography.labelSmall, modifier = Modifier.padding(horizontal = 10.dp, vertical = 3.dp))
+                        }
+                    }
+                    Text(formatMoney(balance), style = MaterialTheme.typography.displaySmall, fontWeight = FontWeight.Bold, color = fg)
                     Spacer(Modifier.height(4.dp))
                     val total = (income + expense).takeIf { it > 0 } ?: 1L
-                    Box(Modifier.fillMaxWidth().height(6.dp).clip(RoundedCornerShape(50)).background(Color.White.copy(alpha = .25f))) {
+                    Box(Modifier.fillMaxWidth().height(6.dp).clip(RoundedCornerShape(50)).background(fg.copy(alpha = .12f))) {
                         Box(
                             Modifier.fillMaxWidth(income.toFloat() / total).fillMaxHeight()
                                 .clip(RoundedCornerShape(50))
-                                .background(MaterialTheme.colorScheme.onPrimary.copy(alpha = .55f))
+                                .background(if (glass) primary else Color.White.copy(alpha = .7f))
                         )
                     }
                     Row(Modifier.fillMaxWidth()) {
-                        Text("收入 ${formatMoney(income)}", color = Color.White.copy(alpha = .9f), style = MaterialTheme.typography.labelMedium, modifier = Modifier.weight(1f))
-                        Text("支出 ${formatMoney(expense)}", color = Color.White.copy(alpha = .9f), style = MaterialTheme.typography.labelMedium)
+                        Text("收入 ${formatMoney(income)}", color = sub, style = MaterialTheme.typography.labelMedium, modifier = Modifier.weight(1f))
+                        Text("支出 ${formatMoney(expense)}", color = sub, style = MaterialTheme.typography.labelMedium)
                     }
                 }
             }
@@ -3285,7 +3327,6 @@ private fun DataScreen(
                     Text(nickname, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
                     Text("数据只在这台手机", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
-                IconButton(onClick = { page = "settings" }) { Icon(Icons.Default.Settings, contentDescription = "设置") }
             }
         }
         item {
