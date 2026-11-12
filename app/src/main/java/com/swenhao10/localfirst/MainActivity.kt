@@ -216,6 +216,11 @@ import java.util.Calendar
 import java.util.Locale
 
 class MainActivity : ComponentActivity() {
+    // 离开 App 时把桌面毛毡板刷新一下（新记录、刚背的词、待复习数）
+    override fun onStop() {
+        super.onStop()
+        com.swenhao10.localfirst.widget.FeltWidgetBase.refreshAll(this)
+    }
     override fun onCreate(state: Bundle?) {
         super.onCreate(state)
         val db = AppDatabase.get(this)
