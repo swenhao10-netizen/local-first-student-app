@@ -1,0 +1,26 @@
+{
+  "schema_version": 2,
+  "pack_id": "org.zhixing.toefl",
+  "name": "托福词汇（ECDICT）",
+  "language": "en",
+  "level": "托福",
+  "entry_count": 6974,
+  "version": "2026.11.12",
+  "released_at": "2026-11-12",
+  "license": {
+    "spdx": "MIT",
+    "url": "https://github.com/skywind3000/ECDICT/blob/master/LICENSE",
+    "text_ref": "LICENSE.txt"
+  },
+  "source": {
+    "origin": "ECDICT",
+    "author": "skywind3000",
+    "contact": "https://github.com/skywind3000/ECDICT",
+    "retrieved_at": "2026-11-12",
+    "source_file": "ecdict.csv (66,009,548 bytes)"
+  },
+  "checksum": {
+    "sha256_db": "ab5d85cfbbe1066fba13c39509f6fb8709082427e326980d0dd6903158ed658f",
+    "sha256_media": null
+  }
+}

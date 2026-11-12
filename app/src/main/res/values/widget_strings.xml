@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="felt_widget_wide_label">毛毡板 4×2</string>
+    <string name="felt_widget_small_label">单词卡 2×2</string>
+    <string name="felt_widget_wide_desc">最新照片、今天的日常、一张单词卡和待复习数</string>
+    <string name="felt_widget_small_desc">一张单词卡，点一下翻面看意思</string>
+</resources>

@@ -1,0 +1,26 @@
+{
+  "schema_version": 2,
+  "pack_id": "org.zhixing.gk",
+  "name": "高考词汇（ECDICT）",
+  "language": "en",
+  "level": "高考",
+  "entry_count": 3677,
+  "version": "2026.11.12",
+  "released_at": "2026-11-12",
+  "license": {
+    "spdx": "MIT",
+    "url": "https://github.com/skywind3000/ECDICT/blob/master/LICENSE",
+    "text_ref": "LICENSE.txt"
+  },
+  "source": {
+    "origin": "ECDICT",
+    "author": "skywind3000",
+    "contact": "https://github.com/skywind3000/ECDICT",
+    "retrieved_at": "2026-11-12",
+    "source_file": "ecdict.csv (66,009,548 bytes)"
+  },
+  "checksum": {
+    "sha256_db": "220a7a3bd81b2e139d5caaf96190387d57f0f4137860a136ea381332f7e942aa",
+    "sha256_media": null
+  }
+}

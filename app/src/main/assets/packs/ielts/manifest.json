@@ -1,0 +1,26 @@
+{
+  "schema_version": 2,
+  "pack_id": "org.zhixing.ielts",
+  "name": "雅思词汇（ECDICT）",
+  "language": "en",
+  "level": "雅思",
+  "entry_count": 5040,
+  "version": "2026.11.12",
+  "released_at": "2026-11-12",
+  "license": {
+    "spdx": "MIT",
+    "url": "https://github.com/skywind3000/ECDICT/blob/master/LICENSE",
+    "text_ref": "LICENSE.txt"
+  },
+  "source": {
+    "origin": "ECDICT",
+    "author": "skywind3000",
+    "contact": "https://github.com/skywind3000/ECDICT",
+    "retrieved_at": "2026-11-12",
+    "source_file": "ecdict.csv (66,009,548 bytes)"
+  },
+  "checksum": {
+    "sha256_db": "dd586e7f8ef9935aa0e3b2b5b5162633d5def77b36e7d0e06c99b0afa885b95e",
+    "sha256_media": null
+  }
+}

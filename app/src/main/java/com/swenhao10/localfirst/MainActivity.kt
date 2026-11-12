@@ -1,5 +1,19 @@
 package com.swenhao10.localfirst
 
+import android.speech.tts.TextToSpeech
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.material.icons.filled.VolumeUp
+import androidx.compose.material3.ListItemDefaults
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.rememberScrollState
+import java.text.SimpleDateFormat
+import java.util.Date
+import com.swenhao10.localfirst.data.AppDatabase
+import com.swenhao10.localfirst.data.PackWordLite
+import com.swenhao10.localfirst.data.WordProgress
+import com.swenhao10.localfirst.data.WordProgressDao
+import com.swenhao10.localfirst.data.WordStudy
+import com.swenhao10.localfirst.data.lite
 import android.Manifest
 import android.app.TimePickerDialog
 import android.content.Context
@@ -27,12 +41,15 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.compose.material.icons.filled.ChevronRight
+import androidx.compose.material.icons.filled.CalendarMonth
+import androidx.compose.material.icons.filled.ChevronLeft
 import com.swenhao10.localfirst.ui.LaunchAnimation
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.horizontalScroll
@@ -59,12 +76,10 @@ import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardOptions
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AccountBalanceWallet
 import androidx.compose.material.icons.filled.Add
@@ -81,6 +96,7 @@ import androidx.compose.material.icons.filled.PhotoCamera
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -159,7 +175,6 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
-import com.swenhao10.localfirst.data.AppDatabase
 import com.swenhao10.localfirst.data.CardDao
 import com.swenhao10.localfirst.data.DataTransfer
 import com.swenhao10.localfirst.data.PackMeta
@@ -195,33 +210,248 @@ import androidx.activity.result.PickVisualMediaRequest
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.Videocam
+import androidx.compose.animation.core.Animatable
+import androidx.compose.foundation.gestures.Orientation
+import androidx.compose.foundation.gestures.draggable
+import androidx.compose.foundation.gestures.rememberDraggableState
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.unit.IntOffset
+import kotlin.math.roundToInt
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.material3.ProvideTextStyle
+import androidx.compose.material.icons.filled.Check
+import androidx.compose.foundation.layout.imePadding
+import androidx.compose.runtime.mutableStateMapOf
+import androidx.compose.runtime.SideEffect
+import androidx.compose.runtime.key
+import com.swenhao10.localfirst.autobook.AutoBook
+import com.swenhao10.localfirst.autobook.Payment
+import androidx.lifecycle.compose.LifecycleResumeEffect
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.FileOutputStream
-import java.text.SimpleDateFormat
 import java.util.Calendar
-import java.util.Date
 import java.util.Locale
 
 class MainActivity : ComponentActivity() {
+    // 离开 App 时把桌面毛毡板刷新一下（新记录、刚背的词、待复习数）
+    override fun onStop() {
+        super.onStop()
+        com.swenhao10.localfirst.widget.FeltWidgetBase.refreshAll(this)
+        // 离开知行就自动备份一份到「文档/知行」（数据没变就跳过）
+        com.swenhao10.localfirst.data.AutoBackup.schedule(this)
+    }
     override fun onCreate(state: Bundle?) {
+        installCrashLog()
         super.onCreate(state)
         val db = AppDatabase.get(this)
+        val crashFile = java.io.File(filesDir, "last_crash.txt")
+        val lastCrash = runCatching { if (crashFile.exists()) crashFile.readText() else null }.getOrNull()
         setContent {
             // 启动动画只在冷启动放一次（转屏等重建不再放），点一下可跳过
             var showSplash by rememberSaveable { mutableStateOf(state == null) }
+            var crashText by remember { mutableStateOf(lastCrash) }
             Box(Modifier.fillMaxSize()) {
                 LocalFirstApp(db)
                 if (showSplash) LaunchAnimation(onFinished = { showSplash = false })
+                if (!showSplash) RestorePrompt(db)
+                crashText?.let { txt ->
+                    // 上次闪退的原因：只存在本机，复制给开发者看
+                    val clip = androidx.compose.ui.platform.LocalClipboardManager.current
+                    androidx.compose.material3.AlertDialog(
+                        onDismissRequest = { },
+                        title = { Text("上次闪退了") },
+                        text = {
+                            Column(Modifier.heightIn(max = 360.dp).verticalScroll(rememberScrollState())) {
+                                Text("点「复制」把下面的内容发给我，我按它修。", style = MaterialTheme.typography.bodySmall)
+                                Spacer(Modifier.height(8.dp))
+                                androidx.compose.foundation.text.selection.SelectionContainer {
+                                    Text(txt, style = MaterialTheme.typography.labelSmall)
+                                }
+                            }
+                        },
+                        confirmButton = {
+                            TextButton(onClick = { clip.setText(androidx.compose.ui.text.AnnotatedString(txt)) }) { Text("复制") }
+                        },
+                        dismissButton = {
+                            TextButton(onClick = { crashFile.delete(); crashText = null }) { Text("关闭") }
+                        }
+                    )
+                }
             }
+        }
+    }
+
+    /** 闪退时把原因写到本机文件，下次打开弹出来，方便复制。 */
+    private fun installCrashLog() {
+        val prev = Thread.getDefaultUncaughtExceptionHandler()
+        val dir = filesDir
+        Thread.setDefaultUncaughtExceptionHandler { t, e ->
+            runCatching {
+                val sw = java.io.StringWriter()
+                e.printStackTrace(java.io.PrintWriter(sw))
+                val head = "知行 ${runCatching { packageManager.getPackageInfo(packageName, 0).versionName }.getOrNull()} · " +
+                    "Android ${android.os.Build.VERSION.RELEASE} · ${android.os.Build.MODEL} · 线程 ${t.name}\n" +
+                    java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss", java.util.Locale.CHINA).format(java.util.Date()) + "\n\n"
+                java.io.File(dir, "last_crash.txt").writeText(head + sw.toString().take(12000))
+            }
+            prev?.uncaughtException(t, e)
         }
     }
 }
 
 /** v2 底部导航：记录（首页）/ 单词 / 总览 / 我的 */
+/** 应用内的轻提示：一颗小胶囊，跟玻璃风格一致，替代默认的大白条 Snackbar。 */
+@Composable
+private fun TipPill(text: String) {
+    val dark = MaterialTheme.colorScheme.background.red < 0.5f
+    val shape = RoundedCornerShape(50)
+    Box(Modifier.fillMaxWidth().padding(bottom = 8.dp), contentAlignment = Alignment.Center) {
+        Row(
+            Modifier
+                .widthIn(max = 320.dp)
+                .then(if (LocalBackdrop.current != null) Modifier.glass(shape, if (dark) Color(0xB3181C1C) else Color(0xCCFFFFFF)) else Modifier.clip(shape).background(MaterialTheme.colorScheme.inverseSurface))
+                .padding(horizontal = 16.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Box(Modifier.size(8.dp).clip(CircleShape).background(MaterialTheme.colorScheme.primary))
+            Spacer(Modifier.width(10.dp))
+            Text(
+                text,
+                style = MaterialTheme.typography.labelLarge,
+                color = if (LocalBackdrop.current != null) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.inverseOnSurface,
+                maxLines = 2
+            )
+        }
+    }
+}
+
+/** 向右滑动移除：滑过三分之一松手就删，不够就弹回。 */
+@Composable
+private fun SwipeToRemove(onRemove: () -> Unit, content: @Composable () -> Unit) {
+    val scope = rememberCoroutineScope()
+    val offset = remember { Animatable(0f) }
+    var widthPx by remember { mutableStateOf(1f) }
+    val threshold = widthPx * 0.33f
+    val progress = (offset.value / threshold).coerceIn(0f, 1f)
+    val red = MaterialTheme.colorScheme.error
+    Box(Modifier.fillMaxWidth().onSizeChanged { widthPx = it.width.toFloat().coerceAtLeast(1f) }) {
+        if (offset.value > 0f) {
+            Box(
+                Modifier.matchParentSize().clip(RoundedCornerShape(18.dp)).background(red.copy(alpha = 0.25f + 0.6f * progress)).padding(start = 22.dp),
+                contentAlignment = Alignment.CenterStart
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Default.Delete, null, tint = Color.White)
+                    Spacer(Modifier.width(8.dp))
+                    Text(if (progress >= 1f) "松手移出" else "移出生词本", color = Color.White, fontWeight = FontWeight.SemiBold)
+                }
+            }
+        }
+        Box(
+            Modifier
+                .offset { IntOffset(offset.value.roundToInt(), 0) }
+                .draggable(
+                    orientation = Orientation.Horizontal,
+                    state = rememberDraggableState { d -> scope.launch { offset.snapTo((offset.value + d).coerceIn(0f, widthPx)) } },
+                    onDragStopped = {
+                        if (offset.value >= threshold) {
+                            offset.animateTo(widthPx)
+                            onRemove()
+                        } else offset.animateTo(0f)
+                    }
+                )
+        ) { content() }
+    }
+}
+
+/**
+ * 统一的弹窗：从底部浮起的圆角面板，跟玻璃风格一致（深色半透明 + 细描边 + 拖动条），
+ * 参数跟 AlertDialog 一样，直接替换。
+ */
+@Composable
+private fun ZhAlertDialog(
+    onDismissRequest: () -> Unit,
+    confirmButton: @Composable () -> Unit = {},
+    dismissButton: (@Composable () -> Unit)? = null,
+    title: (@Composable () -> Unit)? = null,
+    text: (@Composable () -> Unit)? = null
+) {
+    val host = LocalOverlay.current
+    val panel: @Composable () -> Unit = { ZhSheet(onDismissRequest, confirmButton, dismissButton, title, text) }
+    if (host == null) {
+        Dialog(onDismissRequest = onDismissRequest, properties = DialogProperties(usePlatformDefaultWidth = false)) { panel() }
+        return
+    }
+    val id = remember { Any() }
+    SideEffect { host[id] = panel }
+    DisposableEffect(id) { onDispose { host.remove(id) } }
+}
+
+/** 底部浮起的玻璃面板：压暗背后 + 真玻璃（模糊折射背景）+ 细描边 + 拖动条。 */
+@Composable
+private fun ZhSheet(
+    onDismissRequest: () -> Unit,
+    confirmButton: @Composable () -> Unit,
+    dismissButton: (@Composable () -> Unit)?,
+    title: (@Composable () -> Unit)?,
+    text: (@Composable () -> Unit)?
+) {
+    val dark = MaterialTheme.colorScheme.background.red < 0.5f
+    val glassOn = LocalBackdrop.current != null
+    var shown by remember { mutableStateOf(false) }
+    LaunchedEffect(Unit) { shown = true }
+    BackHandler(onBack = onDismissRequest)
+    Box(
+        Modifier.fillMaxSize()
+            .background(Color.Black.copy(alpha = if (dark) .45f else .28f))
+            .clickable(interactionSource = remember { MutableInteractionSource() }, indication = null, onClick = onDismissRequest),
+        contentAlignment = Alignment.BottomCenter
+    ) {
+        AnimatedVisibility(shown, enter = slideInVertically { it / 3 } + fadeIn()) {
+            val shape = RoundedCornerShape(30.dp)
+            Column(
+                Modifier
+                    .padding(horizontal = 12.dp, vertical = 16.dp)
+                    .navigationBarsPadding()
+                    .imePadding()
+                    .fillMaxWidth()
+                    .heightIn(max = 640.dp)
+                    .then(
+                        if (glassOn) Modifier.glass(shape, if (dark) Color(0x8C182120) else Color(0xA6FFFFFF), blurDp = 24f, lensDp = 18f)
+                        else Modifier.clip(shape).background(if (dark) Color(0xF2161D1C) else Color(0xF7FBFDFC))
+                    )
+                    .border(1.dp, Color.White.copy(alpha = if (dark) .14f else .5f), shape)
+                    .clickable(interactionSource = remember { MutableInteractionSource() }, indication = null) {}
+                    .padding(horizontal = 22.dp)
+                    .padding(top = 10.dp, bottom = 14.dp)
+            ) {
+                Box(Modifier.align(Alignment.CenterHorizontally).size(36.dp, 4.dp).clip(RoundedCornerShape(50)).background(MaterialTheme.colorScheme.onSurface.copy(alpha = .25f)))
+                Spacer(Modifier.height(14.dp))
+                if (title != null) {
+                    ProvideTextStyle(MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold)) { title() }
+                    Spacer(Modifier.height(10.dp))
+                }
+                if (text != null) {
+                    Box(Modifier.weight(1f, fill = false).verticalScroll(rememberScrollState())) {
+                        ProvideTextStyle(MaterialTheme.typography.bodyMedium) { text() }
+                    }
+                }
+                Row(Modifier.fillMaxWidth().padding(top = 8.dp), horizontalArrangement = Arrangement.End, verticalAlignment = Alignment.CenterVertically) {
+                    dismissButton?.invoke()
+                    confirmButton()
+                }
+            }
+        }
+    }
+}
+
 private enum class Tab(val label: String) { RECORD("记录"), WORDS("单词"), OVERVIEW("总览"), DATA("我的") }
 
 private val ZhixingColors = lightColorScheme(
@@ -394,6 +624,8 @@ private fun paletteFor(id: String, dark: Boolean): androidx.compose.material3.Co
 private val LocalGlass = staticCompositionLocalOf { false }
 /** 玻璃要“透过去”看到的那层背景；null = 没开玻璃，退回普通半透明。 */
 private val LocalBackdrop = staticCompositionLocalOf<LayerBackdrop?> { null }
+/** 弹窗宿主：ZhAlertDialog 把自己挂到这里，画在主界面最上层。 */
+private val LocalOverlay = staticCompositionLocalOf<androidx.compose.runtime.snapshots.SnapshotStateMap<Any, @Composable () -> Unit>?> { null }
 /** 自定义背景图路径；null = 默认渐变。 */
 private val LocalBgPath = staticCompositionLocalOf<String?> { null }
 
@@ -644,7 +876,8 @@ private fun LocalFirstApp(db: AppDatabase) {
         }
     }
     // 背单词的学习进度：提到这里，切 Tab / 重进页面不再从头开始
-    val study = remember { StudyProgress(SettingsStore.getStudyProgress(context)) }
+    var bookId by remember { mutableStateOf(SettingsStore.getBookId(context)) }
+    val study = remember { StudyProgress(SettingsStore.getStudyProgress(context), SettingsStore.getBookIndex(context, SettingsStore.getBookId(context))) }
     val useDarkTheme = when (themeMode) {
         ThemeMode.LIGHT -> false
         ThemeMode.DARK -> true
@@ -660,18 +893,23 @@ private fun LocalFirstApp(db: AppDatabase) {
                 SettingsStore.setSeedCardsCleaned(context)
             }
         }
-        // 内置词包：首次打开把 pack.db 从 assets 复制到本机，再只读加载，离线可用
+    }
+    // 词书：用到哪本就从 assets 复制哪本到本机，再只读加载，离线可用；换书时重新加载
+    LaunchedEffect(bookId) {
+        packReady = false
         withContext(Dispatchers.IO) {
-            packMeta = PackStore.loadMeta(context)
-            packWords = PackStore.loadWords(context)
-            packReady = true
+            packMeta = PackStore.loadMeta(context, bookId)
+            packWords = PackStore.loadWords(context, bookId)
         }
+        packReady = true
     }
 
     val baseScheme = paletteFor(paletteId, useDarkTheme)
     MaterialTheme(colorScheme = if (glassOn) glassScheme(baseScheme, useDarkTheme) else baseScheme) {
         val layerBackdrop = rememberLayerBackdrop()
+        val overlays = remember { mutableStateMapOf<Any, @Composable () -> Unit>() }
         CompositionLocalProvider(
+            LocalOverlay provides overlays,
             LocalGlass provides glassOn,
             LocalBackdrop provides (if (glassOn) layerBackdrop else null),
             LocalBgPath provides bgPath
@@ -681,7 +919,7 @@ private fun LocalFirstApp(db: AppDatabase) {
         Scaffold(
             containerColor = if (glassOn) Color.Transparent else MaterialTheme.colorScheme.background,
             contentColor = MaterialTheme.colorScheme.onBackground,
-            snackbarHost = { SnackbarHost(snackbarHostState) },
+            snackbarHost = { SnackbarHost(snackbarHostState) { data -> TipPill(data.visuals.message) } },
             bottomBar = {
                 if (glassOn) {
                     GlassBottomBar(selected = tab, onSelect = { tab = it }, onAdd = {
@@ -718,7 +956,7 @@ private fun LocalFirstApp(db: AppDatabase) {
                             editingRecord = null
                             showAddRecord = true
                         },
-                        onSearch = { message = "搜索这次只放了入口，功能还没做" },
+                        onSearch = { message = "还没有记录" },
                         modifier = Modifier.padding(padding),
                         onEditRecord = { record ->
                             editingRecord = record
@@ -736,13 +974,18 @@ private fun LocalFirstApp(db: AppDatabase) {
                     )
                     Tab.WORDS -> WordsScreen(
                         packWords = packWords,
-                        packMeta = packMeta,
                         packReady = packReady,
+                        bookId = bookId,
+                        onChangeBook = { id ->
+                            SettingsStore.setBookIndex(context, bookId, study.index)
+                            SettingsStore.setBookId(context, id)
+                            study.index = SettingsStore.getBookIndex(context, id)
+                            bookId = id
+                            message = "已换成「${PackStore.book(id).shortName}」"
+                        },
                         unknownWords = unknownWords,
                         cards = cards,
-                        recordsDao = recordsDao,
-                        unknownDao = unknownDao,
-                        cardsDao = cardsDao,
+                        db = db,
                         study = study,
                         modifier = Modifier.padding(padding),
                         onMessage = { message = it }
@@ -854,7 +1097,7 @@ private fun LocalFirstApp(db: AppDatabase) {
             )
         }
         if (showProfileMenu) {
-            AlertDialog(
+            ZhAlertDialog(
                 onDismissRequest = { showProfileMenu = false },
                 title = { Text("头像和昵称") },
                 text = { Text("头像只用本机图片，不上传。") },
@@ -883,6 +1126,8 @@ private fun LocalFirstApp(db: AppDatabase) {
                 }
             )
         }
+        // 弹窗都画在这一层：跟页面在同一个窗口里，玻璃才能透出背景
+        overlays.entries.toList().forEach { (k, v) -> key(k) { v() } }
         }
         }
     }
@@ -896,7 +1141,7 @@ private fun iconFor(tab: Tab): ImageVector = when (tab) {
 }
 
 /** 记录（首页）：头像昵称头 + 时间轴，按天分组，最新在前。 */
-@OptIn(ExperimentalFoundationApi::class)
+@OptIn(ExperimentalFoundationApi::class, ExperimentalMaterial3Api::class)
 @Composable
 private fun RecordScreen(
     records: List<RecordEntry>,
@@ -915,7 +1160,42 @@ private fun RecordScreen(
     var viewer by remember { mutableStateOf<Pair<List<String>, Int>?>(null) }
     val dayCount = remember(records) { records.map { dayKey(it.createdAt) }.distinct().size }
     val avatarBitmap = rememberBitmap(avatarPath, 256)
-    LazyColumn(modifier.fillMaxSize().padding(horizontal = 16.dp)) {
+    // 放大镜 = 跳到某一天：日历里只有记过东西的日子能点
+    val listState = androidx.compose.foundation.lazy.rememberLazyListState()
+    val listScope = rememberCoroutineScope()
+    var showDatePick by remember { mutableStateOf(false) }
+    val recordDays = remember(records) { records.map { dayKey(it.createdAt) }.toSet() }
+    if (showDatePick) {
+        val utcFmt = remember { SimpleDateFormat("yyyy-MM-dd", Locale.CHINA).apply { timeZone = java.util.TimeZone.getTimeZone("UTC") } }
+        val pickState = androidx.compose.material3.rememberDatePickerState(
+            initialSelectedDateMillis = records.firstOrNull()?.let { utcFmt.parse(dayKey(it.createdAt))?.time },
+            selectableDates = object : androidx.compose.material3.SelectableDates {
+                override fun isSelectableDate(utcTimeMillis: Long) = utcFmt.format(Date(utcTimeMillis)) in recordDays
+            }
+        )
+        androidx.compose.material3.DatePickerDialog(
+            onDismissRequest = { showDatePick = false },
+            confirmButton = {
+                TextButton(onClick = {
+                    showDatePick = false
+                    val picked = pickState.selectedDateMillis?.let { utcFmt.format(Date(it)) } ?: return@TextButton
+                    // 算出那一天的标题在列表里是第几项：header 占 1，之后每天 = 1 个标题 + 当天条数
+                    var idx = 1
+                    var target = -1
+                    for ((key, list) in records.groupBy { dayKey(it.createdAt) }) {
+                        if (key <= picked) { target = idx; break }
+                        idx += 1 + list.size
+                    }
+                    if (target < 0) target = (idx - 1).coerceAtLeast(0)
+                    listScope.launch { listState.animateScrollToItem(target) }
+                }) { Text("跳过去") }
+            },
+            dismissButton = { TextButton(onClick = { showDatePick = false }) { Text("取消") } }
+        ) {
+            androidx.compose.material3.DatePicker(state = pickState, title = { Text("跳到哪一天", modifier = Modifier.padding(start = 24.dp, top = 16.dp)) }, showModeToggle = false)
+        }
+    }
+    LazyColumn(modifier.fillMaxSize().padding(horizontal = 16.dp), state = listState) {
         item(key = "header") {
             Spacer(Modifier.height(6.dp))
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -943,13 +1223,13 @@ private fun RecordScreen(
                     )
                 }
                 if (LocalBackdrop.current != null) {
-                    GlassButton(onClick = onSearch, modifier = Modifier.size(46.dp)) {
-                        Icon(Icons.Default.Search, contentDescription = "搜索", tint = MaterialTheme.colorScheme.onSurface)
+                    GlassButton(onClick = { if (records.isEmpty()) onSearch() else showDatePick = true }, modifier = Modifier.size(46.dp)) {
+                        Icon(Icons.Default.CalendarMonth, contentDescription = "跳到日期", tint = MaterialTheme.colorScheme.onSurface)
                     }
                 } else IconButton(
-                    onClick = onSearch,
+                    onClick = { if (records.isEmpty()) onSearch() else showDatePick = true },
                     modifier = Modifier.size(42.dp).background(MaterialTheme.colorScheme.surface, CircleShape)
-                ) { Icon(Icons.Default.Search, contentDescription = "搜索", tint = MaterialTheme.colorScheme.onSurface) }
+                ) { Icon(Icons.Default.CalendarMonth, contentDescription = "跳到日期", tint = MaterialTheme.colorScheme.onSurface) }
                 if (!LocalGlass.current) {
                     Spacer(Modifier.width(10.dp))
                     Surface(onClick = onAddRecord, shape = CircleShape, color = MaterialTheme.colorScheme.primary, modifier = Modifier.size(46.dp)) {
@@ -984,7 +1264,7 @@ private fun RecordScreen(
         ImageViewer(paths = paths, startIndex = start, onDismiss = { viewer = null })
     }
     pendingAction?.let { target ->
-        AlertDialog(
+        ZhAlertDialog(
             onDismissRequest = { pendingAction = null },
             title = { Text("删除这条记录？") },
             text = { Text(if (target.kind == "study") "背单词自动记的，删了就没了。" else "点一下这条记录可以直接改内容；删了就找不回来。") },
@@ -1032,7 +1312,7 @@ private fun AvatarFace(name: String, modifier: Modifier) {
 @Composable
 private fun RenameDialog(current: String, onCancel: () -> Unit, onSave: (String) -> Unit) {
     var value by remember { mutableStateOf(current) }
-    AlertDialog(
+    ZhAlertDialog(
         onDismissRequest = onCancel,
         title = { Text("改个名字") },
         text = {
@@ -1104,8 +1384,9 @@ private fun RecordImages(paths: List<String>, modifier: Modifier = Modifier, onI
     if (paths.size == 1) {
         val path = paths.first()
         val video = isVideoPath(path)
-        val bitmap = rememberBitmap(path)
-        if (bitmap != null || video) {
+        val bitmap = rememberBitmap(path, 720)
+        val exists = remember(path) { java.io.File(path).exists() }
+        if (exists) {
             Box(
                 modifier = modifier
                     .fillMaxWidth(0.7f)
@@ -1124,8 +1405,8 @@ private fun RecordImages(paths: List<String>, modifier: Modifier = Modifier, onI
                 }
                 if (video) {
                     PlayBadge()
-                    val dur = remember(path) { videoDurationMs(path) }
-                    if (dur != null) DurationTag(dur, Modifier.align(Alignment.BottomEnd))
+                    val dur by androidx.compose.runtime.produceState<Long?>(null, path) { value = withContext(Dispatchers.IO) { videoDurationMs(path) } }
+                    dur?.let { DurationTag(it, Modifier.align(Alignment.BottomEnd)) }
                 }
             }
         }
@@ -1135,7 +1416,7 @@ private fun RecordImages(paths: List<String>, modifier: Modifier = Modifier, onI
         paths.chunked(3).forEachIndexed { rowIndex, row ->
             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 row.forEachIndexed { colIndex, path ->
-                    val bitmap = rememberBitmap(path)
+                    val bitmap = rememberBitmap(path, 360)
                     Box(
                         modifier = Modifier
                             .weight(1f)
@@ -1970,30 +2251,64 @@ private fun PaletteChip(label: String, dotColor: Color, selected: Boolean, onCli
     }
 }
 
-/** 单词：内置四六级词包卡片流 + 不记得的单词 + 自己加的卡片。 */
+/** 单词：选词书、卡片背词（复习优先）、今日统计、生词本、自己加的卡片。 */
 @Composable
 private fun WordsScreen(
     packWords: List<PackWord>,
-    packMeta: PackMeta?,
     packReady: Boolean,
+    bookId: String,
+    onChangeBook: (String) -> Unit,
     unknownWords: List<UnknownWord>,
     cards: List<VocabularyCard>,
-    recordsDao: RecordDao,
-    unknownDao: UnknownWordDao,
-    cardsDao: CardDao,
+    db: AppDatabase,
     study: StudyProgress,
     modifier: Modifier,
     onMessage: (String) -> Unit
 ) {
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
+    val recordsDao = remember(db) { db.records() }
+    val unknownDao = remember(db) { db.unknownWords() }
+    val cardsDao = remember(db) { db.cards() }
+    val progressDao = remember(db) { db.wordProgress() }
+    val dayDao = remember(db) { db.studyDays() }
+    val book = PackStore.book(bookId)
     var showAddCard by remember { mutableStateOf(false) }
-    // 不记得的单词：收进一个单独页面，单词页上只留一个入口
-    var showUnknownPage by remember { mutableStateOf(false) }
+    var showBookPicker by remember { mutableStateOf(false) }
     var cardToDelete by remember { mutableStateOf<VocabularyCard?>(null) }
+    var detailWord by remember { mutableStateOf<PackWordLite?>(null) }
+    var showUnknownBook by remember { mutableStateOf(false) }
     val total = packWords.size
-    // 进度在外层保存（切 Tab 不丢），这里每次变动写回本机
-    fun saveProgress() = SettingsStore.setStudyProgress(context, study.snapshot())
+    val wordMap = remember(packWords) { packWords.associateBy { it.headword } }
+
+    // 统计：待复习 / 今日 / 学习天数；每次进出学习刷新一下「现在」
+    val nowKey = remember(study.inStudy) { System.currentTimeMillis() }
+    val dueCount by remember(nowKey) { progressDao.observeDueCount(nowKey) }.collectAsState(initial = 0)
+    val learnedCount by remember { progressDao.observeLearnedCount() }.collectAsState(initial = 0)
+    val masteredCount by remember { progressDao.observeMasteredCount(WordStudy.MASTERED_STAGE) }.collectAsState(initial = 0)
+    val days by remember { dayDao.observeAll() }.collectAsState(initial = emptyList())
+    val today = days.firstOrNull { it.day == WordStudy.today() }
+    val studyDays = days.count { it.newCount + it.reviewCount > 0 }
+    val streak = WordStudy.streak(days)
+
+    // 发音：用手机自带的英文朗读，离线可用
+    var tts by remember { mutableStateOf<TextToSpeech?>(null) }
+    DisposableEffect(Unit) {
+        var engine: TextToSpeech? = null
+        engine = TextToSpeech(context) { status ->
+            if (status == TextToSpeech.SUCCESS) { engine?.language = Locale.US; tts = engine }
+        }
+        onDispose { engine?.shutdown(); tts = null }
+    }
+    fun speak(word: String) {
+        val t = tts
+        if (t == null) onMessage("手机没有可用的英文朗读引擎") else t.speak(word, TextToSpeech.QUEUE_FLUSH, null, word)
+    }
+
+    fun saveProgress() {
+        SettingsStore.setStudyProgress(context, study.snapshot())
+        SettingsStore.setBookIndex(context, bookId, study.index)
+    }
 
     fun finishSession() {
         val reviewed = study.known + study.unknown
@@ -2005,225 +2320,284 @@ private fun WordsScreen(
             }
             onMessage("已记到记录里")
         }
-        // 退出学习不清零位置：下次点「继续学习」还从这一张接着背
         study.showMeaning = false; study.known = 0; study.unknown = 0; study.inStudy = false
-        saveProgress()
-    }
-    fun nextWord() {
-        study.showMeaning = false
-        if (study.index + 1 >= total) finishSession() else { study.index += 1; saveProgress() }
-    }
-    fun startSession(resume: Boolean = true) {
-        if (total == 0) {
-            onMessage("内置词包还没准备好")
-            return
-        }
-        study.index = study.index.coerceIn(0, total - 1)
-        // 继续学习就接着上次的位置；只有「重新开始」才从头来
-        if (!resume) { study.index = 0; study.known = 0; study.unknown = 0 }
-        study.inStudy = true
-        study.showMeaning = false
+        study.queue.clear(); study.reviewPos = 0; study.mode = StudyMode.BOOK
         saveProgress()
     }
 
-    if (study.inStudy && packWords.isNotEmpty()) {
-        val index = study.index.coerceIn(0, total - 1)
-        val word = packWords[index]
+    /** 开始背词：先过到期的复习词（记错多的优先），再接着学新词。 */
+    fun startSession(resume: Boolean = true) {
+        if (total == 0) { onMessage("词书还没准备好"); return }
+        scope.launch {
+            val due = withContext(Dispatchers.IO) { progressDao.due(System.currentTimeMillis(), 200) }
+            study.queue.clear(); study.queue.addAll(due.map { it.lite() })
+            study.reviewPos = 0
+            study.mode = StudyMode.BOOK
+            study.index = study.index.coerceIn(0, total - 1)
+            if (!resume) { study.index = 0; study.known = 0; study.unknown = 0 }
+            study.inStudy = true
+            study.showMeaning = false
+            saveProgress()
+        }
+    }
+
+    /** 只复习生词本。 */
+    fun startUnknownReview() {
+        if (unknownWords.isEmpty()) { onMessage("生词本是空的"); return }
+        study.queue.clear()
+        study.queue.addAll(unknownWords.sortedBy { it.knownCount }.map { it.lite() })
+        study.reviewPos = 0
+        study.mode = StudyMode.UNKNOWN
+        study.known = 0; study.unknown = 0
+        study.showMeaning = false
+        study.inStudy = true
+    }
+
+    if (study.inStudy && (packWords.isNotEmpty() || study.mode == StudyMode.UNKNOWN)) {
+        val inQueue = study.reviewPos < study.queue.size
+        if (study.mode == StudyMode.UNKNOWN && !inQueue) {
+            // 生词本过完一轮
+            LaunchedEffect(Unit) { finishSession() }
+            return
+        }
+        val index = study.index.coerceIn(0, (total - 1).coerceAtLeast(0))
+        val isReview = inQueue
+        val lite: PackWordLite = if (inQueue) study.queue[study.reviewPos] else packWords[index].lite()
+        val full: PackWord? = wordMap[lite.headword]
+        var progress by remember(lite.headword) { mutableStateOf<WordProgress?>(null) }
+        LaunchedEffect(lite.headword) { progress = withContext(Dispatchers.IO) { progressDao.get(lite.headword) } }
+        val unknownEntry = unknownWords.firstOrNull { it.headword == lite.headword }
         val warnColor = MaterialTheme.colorScheme.secondary
+
+        fun answer(known: Boolean) {
+            if (known) study.known += 1 else study.unknown += 1
+            study.showMeaning = true
+            saveProgress()
+            val wasNew = progress == null
+            scope.launch {
+                // 写库出错不能把整个 App 带崩：最多这一次进度没记上
+                runCatching { withContext(Dispatchers.IO) {
+                    progressDao.upsert(WordStudy.answer(progressDao.get(lite.headword), lite, known))
+                    WordStudy.bumpToday(dayDao, isNew = wasNew && !isReview)
+                    if (study.mode == StudyMode.UNKNOWN) {
+                        val cur = unknownDao.all().firstOrNull { it.headword == lite.headword }
+                        if (cur != null) {
+                            if (!known) unknownDao.setKnownCount(lite.headword, 0)
+                            else if (cur.knownCount + 1 >= WordStudy.UNKNOWN_GRADUATE) unknownDao.deleteByHeadword(lite.headword)
+                            else unknownDao.setKnownCount(lite.headword, cur.knownCount + 1)
+                        }
+                    } else if (!known) {
+                        if (unknownDao.countByHeadword(lite.headword) == 0) {
+                            unknownDao.insert(UnknownWord(headword = lite.headword, phonetic = lite.phonetic, meaning = lite.meaning))
+                        } else unknownDao.setKnownCount(lite.headword, 0)
+                    }
+                } }.onFailure { android.util.Log.w("WordStudy", "answer save failed", it) }
+            }
+        }
+        fun next() {
+            study.showMeaning = false
+            if (isReview) {
+                study.reviewPos += 1
+                if (study.mode == StudyMode.UNKNOWN && study.reviewPos >= study.queue.size) finishSession()
+            } else if (study.index + 1 >= total) finishSession()
+            else { study.index += 1; saveProgress() }
+        }
+
+        val label = when {
+            study.mode == StudyMode.UNKNOWN -> "生词本"
+            isReview -> "${book.shortName} · 复习"
+            else -> "${book.shortName} · 新词"
+        }
+        val counter = if (isReview) "${study.reviewPos + 1} / ${study.queue.size}" else "${index + 1} / $total"
+        val frac = if (isReview) (study.reviewPos + 1f) / study.queue.size.coerceAtLeast(1) else if (total == 0) 0f else (index + 1f) / total
+
         Column(modifier.fillMaxSize().padding(horizontal = 20.dp)) {
             Spacer(Modifier.height(4.dp))
-            // 顶栏：左边退出，中间进度计数
             Box(Modifier.fillMaxWidth()) {
                 TextButton(
                     onClick = { finishSession() },
                     contentPadding = androidx.compose.foundation.layout.PaddingValues(0.dp),
                     modifier = Modifier.align(Alignment.CenterStart)
                 ) { Text("‹ 结束", color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.SemiBold) }
-                Text(
-                    "${index + 1} / $total",
-                    fontWeight = FontWeight.Bold,
-                    modifier = Modifier.align(Alignment.Center)
-                )
+                Text(label, fontWeight = FontWeight.Bold, modifier = Modifier.align(Alignment.Center))
+                Text(counter, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.align(Alignment.CenterEnd))
             }
             Spacer(Modifier.height(8.dp))
             LinearProgressIndicator(
-                progress = { if (total == 0) 0f else (index + 1).toFloat() / total },
+                progress = { frac },
                 modifier = Modifier.fillMaxWidth().height(8.dp).clip(RoundedCornerShape(50)),
                 color = MaterialTheme.colorScheme.primary,
                 trackColor = MaterialTheme.colorScheme.surfaceVariant,
                 drawStopIndicator = {}
             )
-            Spacer(Modifier.height(16.dp))
-            // 词卡：标签 / 单词 / 音标 / 分隔线 / 释义 / 来源
-            GlassCard(color = MaterialTheme.colorScheme.surface, shape = RoundedCornerShape(28.dp), modifier = Modifier.fillMaxWidth()) {
+            Spacer(Modifier.height(12.dp))
+            val wrong = progress?.wrongCount ?: 0
+            if (wrong > 0 || (study.mode == StudyMode.UNKNOWN && unknownEntry != null)) {
+                Surface(color = warnColor.copy(alpha = .14f), shape = RoundedCornerShape(50)) {
+                    Text(
+                        if (study.mode == StudyMode.UNKNOWN) "生词 · 已认识 ${unknownEntry?.knownCount ?: 0}/${WordStudy.UNKNOWN_GRADUATE}" else "记错 $wrong 次 · 优先复习",
+                        style = MaterialTheme.typography.labelLarge, color = warnColor,
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 5.dp)
+                    )
+                }
+                Spacer(Modifier.height(10.dp))
+            }
+            GlassCard(
+                color = MaterialTheme.colorScheme.surface,
+                shape = RoundedCornerShape(28.dp),
+                modifier = Modifier.fillMaxWidth(),
+                onClick = { if (study.showMeaning) detailWord = lite }
+            ) {
                 Column(
                     Modifier.fillMaxWidth().heightIn(min = 330.dp).padding(22.dp),
-                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                    verticalArrangement = Arrangement.spacedBy(10.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
                 ) {
-                    Surface(color = MaterialTheme.colorScheme.primaryContainer, shape = RoundedCornerShape(50)) {
-                        Text(
-                            "四六级单词",
-                            style = MaterialTheme.typography.labelLarge,
-                            color = MaterialTheme.colorScheme.onPrimaryContainer,
-                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 5.dp)
-                        )
+                    Spacer(Modifier.height(36.dp))
+                    Text(lite.headword, style = MaterialTheme.typography.displayMedium, fontWeight = FontWeight.Bold, textAlign = TextAlign.Center)
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        if (!lite.phonetic.isNullOrBlank()) {
+                            Text("/${lite.phonetic}/", style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                        IconButton(onClick = { speak(lite.headword) }) {
+                            Icon(Icons.Default.VolumeUp, contentDescription = "发音", tint = MaterialTheme.colorScheme.primary)
+                        }
                     }
-                    Spacer(Modifier.height(40.dp))
-                    Text(
-                        word.headword,
-                        style = MaterialTheme.typography.displayMedium,
-                        fontWeight = FontWeight.Bold,
-                        textAlign = TextAlign.Center,
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                    if (!word.phonetic.isNullOrBlank()) {
-                        Text(
-                            word.phonetic,
-                            style = MaterialTheme.typography.bodyLarge,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            textAlign = TextAlign.Center,
-                            modifier = Modifier.fillMaxWidth()
-                        )
-                    }
-                    Spacer(Modifier.height(40.dp))
+                    Spacer(Modifier.height(24.dp))
                     HorizontalDivider()
                     Spacer(Modifier.height(6.dp))
-                    // 意思先藏起来，点过「认识 / 不认识」才显示
                     if (study.showMeaning) {
-                        Text(word.meaning, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
+                        Text(lite.meaning.replace("；", "\n"), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold, textAlign = TextAlign.Center)
+                        val forms = full?.forms.orEmpty().filter { it.first != "原形" }
+                        if (forms.isNotEmpty()) {
+                            Text(forms.joinToString(" · ") { it.second }.let { it }, style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant, textAlign = TextAlign.Center)
+                        }
+                        Text("点卡片看详情", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     } else {
                         Text(
-                            "先想一想，点「认识」或「不认识」后显示意思",
+                            "先想一想它的意思\n点「认识」或「不认识」后显示",
                             style = MaterialTheme.typography.bodyLarge,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             textAlign = TextAlign.Center,
-                            modifier = Modifier.fillMaxWidth().padding(vertical = 18.dp)
+                            modifier = Modifier.padding(vertical = 18.dp)
                         )
                     }
-                    Spacer(Modifier.height(20.dp))
-                    Text(
-                        "来自 四六级词包",
-                        style = MaterialTheme.typography.labelMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.fillMaxWidth(),
-                        textAlign = TextAlign.Center
-                    )
                 }
             }
             Spacer(Modifier.weight(1f))
-            // 没作答：不认识（描边）/ 认识（实心）；作答后显示意思，按钮换成「下一个」
-            if (LocalBackdrop.current != null) {
-                if (!study.showMeaning) {
-                    Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                        GlassButton(
-                            onClick = {
-                                study.unknown += 1
-                                study.showMeaning = true
-                                saveProgress()
-                                scope.launch {
-                                    withContext(Dispatchers.IO) {
-                                        if (unknownDao.countByHeadword(word.headword) == 0) {
-                                            unknownDao.insert(UnknownWord(headword = word.headword, phonetic = word.phonetic, meaning = word.meaning))
-                                        }
-                                    }
-                                }
-                            },
-                            modifier = Modifier.weight(1f).height(54.dp)
-                        ) { Text("不认识", fontWeight = FontWeight.SemiBold, color = warnColor) }
-                        GlassButton(
-                            onClick = {
-                                study.known += 1
-                                study.showMeaning = true
-                                saveProgress()
-                            },
-                            tint = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier.weight(1f).height(54.dp)
-                        ) { Text("认识", fontWeight = FontWeight.SemiBold, color = Color.White) }
+            val glassUi = LocalBackdrop.current != null
+            if (!study.showMeaning) {
+                Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    if (glassUi) {
+                        GlassButton(onClick = { answer(false) }, modifier = Modifier.weight(1f).height(54.dp)) {
+                            Text("不认识", fontWeight = FontWeight.SemiBold, color = warnColor)
+                        }
+                        GlassButton(onClick = { answer(true) }, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.weight(1f).height(54.dp)) {
+                            Text("认识", fontWeight = FontWeight.SemiBold, color = Color.White)
+                        }
+                    } else {
+                        OutlinedButton(
+                            onClick = { answer(false) },
+                            modifier = Modifier.weight(1f).height(54.dp),
+                            shape = RoundedCornerShape(50),
+                            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
+                            colors = ButtonDefaults.outlinedButtonColors(contentColor = warnColor)
+                        ) { Text("不认识", fontWeight = FontWeight.SemiBold) }
+                        Button(
+                            onClick = { answer(true) },
+                            modifier = Modifier.weight(1f).height(54.dp),
+                            shape = RoundedCornerShape(50),
+                            colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
+                        ) { Text("认识", fontWeight = FontWeight.SemiBold) }
+                    }
+                }
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    if (study.mode == StudyMode.UNKNOWN) "连续认识 ${WordStudy.UNKNOWN_GRADUATE} 次就移出生词本" else WordStudy.nextHint(progress),
+                    style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    textAlign = TextAlign.Center, modifier = Modifier.fillMaxWidth()
+                )
+            } else {
+                val last = if (isReview) study.reviewPos + 1 >= study.queue.size && study.mode == StudyMode.UNKNOWN else index + 1 >= total
+                if (glassUi) {
+                    GlassButton(onClick = { next() }, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.fillMaxWidth().height(54.dp)) {
+                        Text(if (last) "完成" else "下一个", fontWeight = FontWeight.SemiBold, color = Color.White)
                     }
                 } else {
-                    GlassButton(
-                        onClick = { nextWord() },
-                        tint = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier.fillMaxWidth().height(54.dp)
-                    ) { Text(if (index + 1 >= total) "完成" else "下一个", fontWeight = FontWeight.SemiBold, color = Color.White) }
-                }
-            } else if (!study.showMeaning) {
-                Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                    OutlinedButton(
-                        onClick = {
-                            study.unknown += 1
-                            study.showMeaning = true
-                            saveProgress()
-                            scope.launch {
-                                withContext(Dispatchers.IO) {
-                                    if (unknownDao.countByHeadword(word.headword) == 0) {
-                                        unknownDao.insert(UnknownWord(headword = word.headword, phonetic = word.phonetic, meaning = word.meaning))
-                                    }
-                                }
-                            }
-                        },
-                        modifier = Modifier.weight(1f).height(54.dp),
-                        shape = RoundedCornerShape(50),
-                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
-                        colors = ButtonDefaults.outlinedButtonColors(contentColor = warnColor)
-                    ) { Text("不认识", fontWeight = FontWeight.SemiBold) }
                     Button(
-                        onClick = {
-                            study.known += 1
-                            study.showMeaning = true
-                            saveProgress()
-                        },
-                        modifier = Modifier.weight(1f).height(54.dp),
+                        onClick = { next() },
+                        modifier = Modifier.fillMaxWidth().height(54.dp),
                         shape = RoundedCornerShape(50),
                         colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
-                    ) { Text("认识", fontWeight = FontWeight.SemiBold) }
+                    ) { Text(if (last) "完成" else "下一个", fontWeight = FontWeight.SemiBold) }
                 }
-            } else {
-                Button(
-                    onClick = { nextWord() },
-                    modifier = Modifier.fillMaxWidth().height(54.dp),
-                    shape = RoundedCornerShape(50),
-                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
-                ) { Text(if (index + 1 >= total) "完成" else "下一个", fontWeight = FontWeight.SemiBold) }
             }
             Spacer(Modifier.height(20.dp))
+        }
+        detailWord?.let { w ->
+            WordDetailDialog(w, wordMap[w.headword], unknownWords.firstOrNull { it.headword == w.headword }, progressDao, unknownDao, onSpeak = { speak(it) }, onDismiss = { detailWord = null })
         }
         return
     }
 
-    if (showUnknownPage) {
-        BackHandler { showUnknownPage = false }
+    if (showUnknownBook) {
+        BackHandler { showUnknownBook = false }
         LazyColumn(modifier.fillMaxSize().padding(horizontal = 20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             item {
                 Spacer(Modifier.height(4.dp))
-                TextButton(
-                    onClick = { showUnknownPage = false },
-                    contentPadding = androidx.compose.foundation.layout.PaddingValues(0.dp)
-                ) { Text("‹ 返回", color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.SemiBold) }
-                Text("不记得的单词", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
-                Text("共 ${unknownWords.size} 个，记住了就点「已记住」", color = MaterialTheme.colorScheme.onSurfaceVariant)
-            }
-            if (unknownWords.isEmpty()) {
-                item { EmptyCard("还没有不记得的单词", "学习时点「不认识」的词会进这里，自己复习") }
-            } else {
-                items(unknownWords, key = { "unknown-${it.id}" }) { word ->
-                    var expanded by remember { mutableStateOf(false) }
-                    GlassCard(color = MaterialTheme.colorScheme.surface, shape = RoundedCornerShape(18.dp)) {
-                        Column(Modifier.fillMaxWidth().padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Text(word.headword, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
-                                TextButton(onClick = { expanded = !expanded }) { Text(if (expanded) "收起" else "看意思") }
-                                TextButton(onClick = {
-                                    scope.launch { withContext(Dispatchers.IO) { unknownDao.deleteByHeadword(word.headword) } }
-                                }) { Text("已记住") }
-                            }
-                            if (!word.phonetic.isNullOrBlank()) Text(word.phonetic, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                            if (expanded) Text(word.meaning)
-                        }
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    IconButton(onClick = { showUnknownBook = false }) { Icon(Icons.Default.ChevronLeft, contentDescription = "返回") }
+                    Column(Modifier.weight(1f)) {
+                        Text("生词本", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
+                        Text("${unknownWords.size} 个 · 连续认识 ${WordStudy.UNKNOWN_GRADUATE} 次自动移出", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                 }
             }
+            if (unknownWords.isNotEmpty()) item {
+                Button(
+                    onClick = { startUnknownReview() },
+                    modifier = Modifier.fillMaxWidth().height(50.dp),
+                    shape = RoundedCornerShape(50),
+                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
+                ) { Icon(Icons.Default.PlayArrow, null); Spacer(Modifier.width(6.dp)); Text("复习生词本", fontWeight = FontWeight.SemiBold) }
+            }
+        if (unknownWords.isEmpty()) {
+            item { EmptyCard("生词本是空的", "背词时点「不认识」的词会自动放进来") }
+        } else {
+            items(unknownWords, key = { "unknown-${it.id}" }) { word ->
+                var expanded by remember { mutableStateOf(false) }
+                SwipeToRemove(onRemove = {
+                    scope.launch { withContext(Dispatchers.IO) { unknownDao.deleteByHeadword(word.headword) } }
+                    onMessage("已把 ${word.headword} 移出生词本")
+                }) {
+                GlassCard(color = MaterialTheme.colorScheme.surface, shape = RoundedCornerShape(18.dp), onClick = { detailWord = word.lite() }) {
+                    Column(Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 14.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Column(Modifier.weight(1f)) {
+                                Text(word.headword, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                                Text(
+                                    listOfNotNull(word.phonetic?.takeIf { it.isNotBlank() }?.let { "/${PackStore.cleanPhonetic(it)}/" }, "认识 ${word.knownCount}/${WordStudy.UNKNOWN_GRADUATE}").joinToString(" · "),
+                                    style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                            Surface(
+                                color = MaterialTheme.colorScheme.primary.copy(alpha = .14f),
+                                shape = RoundedCornerShape(50),
+                                modifier = Modifier.clip(RoundedCornerShape(50)).clickable { expanded = !expanded }
+                            ) {
+                                Text(if (expanded) "收起" else "看意思", color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelLarge, modifier = Modifier.padding(horizontal = 14.dp, vertical = 7.dp))
+                            }
+                        }
+                        if (expanded) Text(word.meaning.replace("；", "\n"))
+                    }
+                }
+                }
+            }
+        }
             item { Spacer(Modifier.height(88.dp)) }
+        }
+        detailWord?.let { w ->
+            WordDetailDialog(w, wordMap[w.headword], unknownWords.firstOrNull { it.headword == w.headword }, progressDao, unknownDao, onSpeak = { speak(it) }, onDismiss = { detailWord = null })
         }
         return
     }
@@ -2235,51 +2609,87 @@ private fun WordsScreen(
             Text("一词一卡，认识就下一个", color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
         item {
+            // 词书卡：书名 / 进度 / 继续学习 · 换词书 · 从头开始
             GlassCard(color = MaterialTheme.colorScheme.primaryContainer, shape = RoundedCornerShape(24.dp)) {
                 Column(Modifier.fillMaxWidth().padding(20.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text(packMeta?.name ?: "内置词包", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onPrimaryContainer)
+                    val onC = MaterialTheme.colorScheme.onPrimaryContainer
+                    Text(book.fullName + if (book.id == "dev") "" else "（ECDICT）", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, color = onC)
                     Text(
-                        if (!packReady) "词包加载中…"
-                        else if (total == 0) "内置词包还没准备好"
-                        else if (study.inStudy) "正在学第 ${study.index + 1} 个"
+                        if (!packReady) "词书加载中…"
+                        else if (total == 0) "词书还没准备好"
                         else if (study.index > 0) "上次学到第 ${study.index + 1} 个 / 共 $total 个"
-                        else "四六级全部单词 · $total 个 · 离线可用",
-                        color = MaterialTheme.colorScheme.onPrimaryContainer
+                        else "共 $total 个词 · 离线可用",
+                        color = onC
                     )
-                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
+                    LinearProgressIndicator(
+                        progress = { if (total == 0) 0f else study.index.toFloat() / total },
+                        modifier = Modifier.fillMaxWidth().height(6.dp).clip(RoundedCornerShape(50)),
+                        color = MaterialTheme.colorScheme.primary,
+                        trackColor = onC.copy(alpha = .15f),
+                        drawStopIndicator = {}
+                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
                         Button(
                             onClick = { startSession(resume = true) },
-                            colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
+                            colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary),
+                            contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 16.dp)
                         ) {
                             Icon(Icons.Default.PlayArrow, contentDescription = null)
-                            Spacer(Modifier.width(6.dp))
-                            Text(if (study.inStudy || study.index > 0) "继续学习" else "开始学习")
+                            Spacer(Modifier.width(4.dp))
+                            Text(if (study.index > 0) "继续学习" else "开始学习")
                         }
+                        OutlinedButton(
+                            onClick = { showBookPicker = true },
+                            border = BorderStroke(1.dp, onC.copy(alpha = .4f)),
+                            colors = ButtonDefaults.outlinedButtonColors(contentColor = onC),
+                            contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 14.dp)
+                        ) { Text("换词书") }
                         if (study.index > 0) {
-                            TextButton(onClick = { startSession(resume = false) }) { Text("从头开始", color = MaterialTheme.colorScheme.primary) }
+                            TextButton(onClick = { startSession(resume = false) }) { Text("从头开始", color = onC) }
                         }
                     }
                 }
             }
         }
         item {
-            // 入口卡：点进去才看到全部不记得的单词
-            GlassCard(
-                onClick = { showUnknownPage = true },
-                color = MaterialTheme.colorScheme.surface,
-                shape = RoundedCornerShape(18.dp)
-            ) {
+            // 今日统计：今日新学 / 复习 / 待复习 / 学习天数
+            GlassCard(color = MaterialTheme.colorScheme.surface, shape = RoundedCornerShape(20.dp)) {
+                Column(Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                        StatColumn("今日新学", "${today?.newCount ?: 0}")
+                        StatColumn("复习", "${today?.reviewCount ?: 0}")
+                        StatColumn("待复习", "$dueCount", highlight = dueCount > 0)
+                        StatColumn("学习天数", "$studyDays 天")
+                    }
+                    Text(
+                        "连续 $streak 天 · 已学 $learnedCount 个 · 掌握 $masteredCount 个",
+                        style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+        }
+        item {
+            // 生词本只放一个入口，点进去单独一页
+            GlassCard(color = MaterialTheme.colorScheme.surface, shape = RoundedCornerShape(20.dp), onClick = { showUnknownBook = true }) {
                 Row(Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 16.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Box(Modifier.size(42.dp).clip(RoundedCornerShape(14.dp)).background(MaterialTheme.colorScheme.primary.copy(alpha = .16f)), contentAlignment = Alignment.Center) {
+                        Icon(Icons.Default.MenuBook, null, tint = MaterialTheme.colorScheme.primary)
+                    }
+                    Spacer(Modifier.width(14.dp))
                     Column(Modifier.weight(1f)) {
-                        Text("不记得的单词", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                        Text("生词本", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
                         Text(
-                            if (unknownWords.isEmpty()) "背词时点「不认识」的会放这里" else "${unknownWords.size} 个，点进去复习",
-                            style = MaterialTheme.typography.labelMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                            if (unknownWords.isEmpty()) "背词时点「不认识」会放进来" else "${unknownWords.size} 个词 · 连续认识 ${WordStudy.UNKNOWN_GRADUATE} 次移出",
+                            style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
-                    Text("${unknownWords.size}", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.secondary)
-                    Icon(Icons.Default.ChevronRight, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                    if (unknownWords.isNotEmpty()) {
+                        Surface(color = MaterialTheme.colorScheme.primary.copy(alpha = .14f), shape = RoundedCornerShape(50)) {
+                            Text("${unknownWords.size}", color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold, modifier = Modifier.padding(horizontal = 10.dp, vertical = 3.dp))
+                        }
+                        Spacer(Modifier.width(4.dp))
+                    }
+                    Icon(Icons.Default.ChevronRight, null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             }
         }
@@ -2288,7 +2698,7 @@ private fun WordsScreen(
                 Text("我的卡片", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
                 IconButton(onClick = { showAddCard = true }) { Icon(Icons.Default.Add, contentDescription = "添加卡片") }
             }
-            Text("自己加的词，不走词包", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text("自己加的词，不走词书", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
         if (cards.isEmpty()) {
             item { EmptyCard("还没有卡片", "点上面 + 添加第一张卡片") }
@@ -2296,6 +2706,7 @@ private fun WordsScreen(
             items(cards, key = { "card-${it.id}" }) { card ->
                 GlassCard(color = MaterialTheme.colorScheme.surface, shape = RoundedCornerShape(18.dp)) {
                     ListItem(
+                        colors = ListItemDefaults.colors(containerColor = Color.Transparent),
                         trailingContent = {
                             IconButton(onClick = { cardToDelete = card }) {
                                 Icon(Icons.Default.Delete, contentDescription = "删除这张卡片", tint = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -2311,8 +2722,58 @@ private fun WordsScreen(
         item { Spacer(Modifier.height(88.dp)) }
     }
 
+    if (showBookPicker) {
+        ZhAlertDialog(
+            onDismissRequest = { showBookPicker = false },
+            title = { Text("换词书") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text("每本书各记各的进度，复习和生词本不分书。", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    PackStore.BOOKS.chunked(2).forEach { pair ->
+                        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                            pair.forEach { b ->
+                                val sel = b.id == bookId
+                                val idx = SettingsStore.getBookIndex(context, b.id)
+                                val pct = if (b.count == 0) 0f else (idx.toFloat() / b.count).coerceIn(0f, 1f)
+                                val fg = if (sel) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurface
+                                Column(
+                                    Modifier
+                                        .weight(1f)
+                                        .clip(RoundedCornerShape(18.dp))
+                                        .background(if (sel) MaterialTheme.colorScheme.primary.copy(alpha = .88f) else MaterialTheme.colorScheme.onSurface.copy(alpha = .07f))
+                                        .border(1.dp, Color.White.copy(alpha = if (sel) 0f else .08f), RoundedCornerShape(18.dp))
+                                        .clickable {
+                                            showBookPicker = false
+                                            if (!sel) onChangeBook(b.id)
+                                        }
+                                        .padding(horizontal = 14.dp, vertical = 12.dp),
+                                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                                ) {
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Text(b.shortName, fontWeight = FontWeight.Bold, color = fg, modifier = Modifier.weight(1f))
+                                        if (sel) Icon(Icons.Default.Check, null, tint = fg, modifier = Modifier.size(16.dp))
+                                    }
+                                    Text(if (idx > 0) "学到 ${idx + 1} / %,d".format(b.count) else "%,d 词".format(b.count), style = MaterialTheme.typography.labelMedium, color = fg.copy(alpha = .72f))
+                                    Box(Modifier.fillMaxWidth().height(4.dp).clip(RoundedCornerShape(50)).background(fg.copy(alpha = .14f))) {
+                                        Box(Modifier.fillMaxWidth(pct.coerceAtLeast(if (idx > 0) 0.03f else 0f)).fillMaxHeight().clip(RoundedCornerShape(50)).background(if (sel) fg else MaterialTheme.colorScheme.primary))
+                                    }
+                                }
+                            }
+                            if (pair.size == 1) Spacer(Modifier.weight(1f))
+                        }
+                    }
+                    Text("专四、专八暂时没有可用的开源词表", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            },
+            confirmButton = {},
+            dismissButton = { TextButton(onClick = { showBookPicker = false }) { Text("关闭") } }
+        )
+    }
+    detailWord?.let { w ->
+        WordDetailDialog(w, wordMap[w.headword], unknownWords.firstOrNull { it.headword == w.headword }, progressDao, unknownDao, onSpeak = { speak(it) }, onDismiss = { detailWord = null })
+    }
     cardToDelete?.let { target ->
-        AlertDialog(
+        ZhAlertDialog(
             onDismissRequest = { cardToDelete = null },
             title = { Text("删除「${target.front}」？") },
             text = { Text("删了就找不回来。") },
@@ -2334,6 +2795,100 @@ private fun WordsScreen(
             }
         }
     }
+}
+
+@Composable
+private fun StatColumn(label: String, value: String, highlight: Boolean = false) {
+    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        Text(label, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Text(value, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold, color = if (highlight) MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.onSurface)
+    }
+}
+
+/** 词详情：音标 + 发音、考试标签、释义、词形变化、我的记录；可加入 / 移出生词本。 */
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun WordDetailDialog(
+    word: PackWordLite,
+    full: PackWord?,
+    unknown: UnknownWord?,
+    progressDao: WordProgressDao,
+    unknownDao: UnknownWordDao,
+    onSpeak: (String) -> Unit,
+    onDismiss: () -> Unit
+) {
+    val scope = rememberCoroutineScope()
+    var progress by remember(word.headword) { mutableStateOf<WordProgress?>(null) }
+    LaunchedEffect(word.headword) { progress = withContext(Dispatchers.IO) { progressDao.get(word.headword) } }
+    val dateFmt = remember { SimpleDateFormat("M 月 d 日", Locale.CHINA) }
+    ZhAlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Column {
+                Text(word.headword, style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    if (!word.phonetic.isNullOrBlank()) Text("/${PackStore.cleanPhonetic(word.phonetic)}/", style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    TextButton(onClick = { onSpeak(word.headword) }) {
+                        Icon(Icons.Default.VolumeUp, contentDescription = null)
+                        Spacer(Modifier.width(4.dp)); Text("发音")
+                    }
+                }
+            }
+        },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                val tags = full?.tags.orEmpty().mapNotNull { PackStore.tagLabel(it) }
+                if (tags.isNotEmpty()) {
+                    FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        tags.forEach { t ->
+                            Surface(color = MaterialTheme.colorScheme.surfaceVariant, shape = RoundedCornerShape(50)) {
+                                Text(t, style = MaterialTheme.typography.labelMedium, modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp))
+                            }
+                        }
+                    }
+                }
+                Text("释义", fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
+                Text(word.meaning.replace("；", "\n").ifBlank { "（词书里没有释义）" })
+                val forms = full?.forms.orEmpty()
+                if (forms.isNotEmpty()) {
+                    Text("词形变化", fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
+                    forms.forEach { (k, v) ->
+                        Row { Text(k, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.width(96.dp)); Text(v, fontWeight = FontWeight.Medium) }
+                    }
+                }
+                Text("我的记录", fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
+                val p = progress
+                if (p == null) Text("还没学过", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                else {
+                    Text("第一次学：${dateFmt.format(Date(p.firstSeen))} · 记错 ${p.wrongCount} 次")
+                    Text(
+                        if (p.dueAt <= System.currentTimeMillis()) "现在该复习了" else "下次复习：${dateFmt.format(Date(p.dueAt))}",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    LinearProgressIndicator(
+                        progress = { (p.stage.toFloat() / WordStudy.MASTERED_STAGE).coerceIn(0f, 1f) },
+                        modifier = Modifier.fillMaxWidth().height(6.dp).clip(RoundedCornerShape(50)),
+                        drawStopIndicator = {}
+                    )
+                }
+                Text("例句、词根词缀、真题例句：词书里暂时没有这些数据。", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        },
+        confirmButton = {
+            if (unknown == null) {
+                TextButton(onClick = {
+                    scope.launch { withContext(Dispatchers.IO) { unknownDao.insert(UnknownWord(headword = word.headword, phonetic = word.phonetic, meaning = word.meaning)) } }
+                    onDismiss()
+                }) { Text("加入生词本") }
+            } else {
+                TextButton(onClick = {
+                    scope.launch { withContext(Dispatchers.IO) { unknownDao.deleteByHeadword(word.headword) } }
+                    onDismiss()
+                }) { Text("已记住，移出生词本") }
+            }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("关闭") } }
+    )
 }
 
 /** 总览：顶部两部分——(a) 我记录的事（按月的日历）(b) 收支记录（本月收支，可切月份）。 */
@@ -2362,30 +2917,38 @@ private fun OverviewScreen(records: List<RecordEntry>, wordCount: Int, modifier:
             Text("看看这个月都记了什么、花了多少", color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
         item {
-            // 本月结余：深色大卡 + 一条收支比例条
+            // 本月结余：玻璃主题下是玻璃大卡，关掉玻璃时是主色大卡
             val glass = LocalGlass.current
             val primary = MaterialTheme.colorScheme.primary
-            Card(colors = CardDefaults.cardColors(containerColor = if (glass) Color.Transparent else primary), shape = RoundedCornerShape(24.dp)) {
+            val fg = if (glass) MaterialTheme.colorScheme.onSurface else Color.White
+            val sub = if (glass) MaterialTheme.colorScheme.onSurfaceVariant else Color.White.copy(alpha = .85f)
+            val balance = income - expense
+            GlassCard(color = if (glass) MaterialTheme.colorScheme.surface else primary, shape = RoundedCornerShape(26.dp)) {
                 Column(
                     Modifier.fillMaxWidth()
-                        .then(if (glass) Modifier.background(Brush.linearGradient(listOf(primary, Color(0xFF6A8FC8), Color(0xFF8A72D6)))) else Modifier)
-                        .padding(20.dp),
+                        .then(if (glass) Modifier.border(1.dp, Color.White.copy(alpha = .12f), RoundedCornerShape(26.dp)) else Modifier)
+                        .padding(22.dp),
                     verticalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
-                    Text("本月结余", color = Color.White.copy(alpha = .85f), style = MaterialTheme.typography.labelLarge)
-                    Text(formatMoney(income - expense), style = MaterialTheme.typography.displaySmall, fontWeight = FontWeight.Bold, color = Color.White)
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text("本月结余", color = sub, style = MaterialTheme.typography.labelLarge, modifier = Modifier.weight(1f))
+                        Surface(color = (if (glass) primary else Color.White).copy(alpha = .16f), shape = RoundedCornerShape(50)) {
+                            Text(if (balance >= 0) "有结余" else "超支", color = if (glass) primary else Color.White, style = MaterialTheme.typography.labelSmall, modifier = Modifier.padding(horizontal = 10.dp, vertical = 3.dp))
+                        }
+                    }
+                    Text(formatMoney(balance), style = MaterialTheme.typography.displaySmall, fontWeight = FontWeight.Bold, color = fg)
                     Spacer(Modifier.height(4.dp))
                     val total = (income + expense).takeIf { it > 0 } ?: 1L
-                    Box(Modifier.fillMaxWidth().height(6.dp).clip(RoundedCornerShape(50)).background(Color.White.copy(alpha = .25f))) {
+                    Box(Modifier.fillMaxWidth().height(6.dp).clip(RoundedCornerShape(50)).background(fg.copy(alpha = .12f))) {
                         Box(
                             Modifier.fillMaxWidth(income.toFloat() / total).fillMaxHeight()
                                 .clip(RoundedCornerShape(50))
-                                .background(MaterialTheme.colorScheme.onPrimary.copy(alpha = .55f))
+                                .background(if (glass) primary else Color.White.copy(alpha = .7f))
                         )
                     }
                     Row(Modifier.fillMaxWidth()) {
-                        Text("收入 ${formatMoney(income)}", color = Color.White.copy(alpha = .9f), style = MaterialTheme.typography.labelMedium, modifier = Modifier.weight(1f))
-                        Text("支出 ${formatMoney(expense)}", color = Color.White.copy(alpha = .9f), style = MaterialTheme.typography.labelMedium)
+                        Text("收入 ${formatMoney(income)}", color = sub, style = MaterialTheme.typography.labelMedium, modifier = Modifier.weight(1f))
+                        Text("支出 ${formatMoney(expense)}", color = sub, style = MaterialTheme.typography.labelMedium)
                     }
                 }
             }
@@ -2543,42 +3106,64 @@ private fun DataScreen(
     var pendingKind by remember { mutableStateOf<String?>(null) }
     val saveAllMedia = rememberGallerySaver()
     var showAiExport by remember { mutableStateOf(false) }
-    fun exportForAi(days: Int?) {
+    var aiWithMedia by remember { mutableStateOf(true) }
+    var aiExporting by remember { mutableStateOf(false) }
+    fun exportForAi(days: Int?, withMedia: Boolean) {
         scope.launch {
+            aiExporting = true
             val result = runCatching {
-                val text = withContext(Dispatchers.IO) { AiExport.build(db.records().all(), nickname, days) }
-                val dir = File(context.cacheDir, "export").apply { mkdirs() }
-                val file = File(dir, "知行_生活记录.md")
-                withContext(Dispatchers.IO) { file.writeText(text) }
-                // 不太长就顺手复制，粘贴进任何 AI 对话框都行
-                if (text.length <= 100_000) {
+                val root = File(context.cacheDir, "export").apply { deleteRecursively(); mkdirs() }
+                val stamp = SimpleDateFormat("yyyyMMdd_HHmm", Locale.CHINA).format(Date())
+                val dir = File(root, "知行导出_$stamp").apply { mkdirs() }
+                val text = withContext(Dispatchers.IO) {
+                    val all = db.records().all()
+                    val names = if (withMedia) AiExport.exportMedia(AiExport.mediaInRange(all, days), dir) else null
+                    AiExport.build(all, nickname, days, names?.takeIf { it.isNotEmpty() })
+                }
+                val md = File(dir, "知行_生活记录.md")
+                withContext(Dispatchers.IO) { md.writeText(text) }
+                val hasImages = File(dir, "图片").listFiles()?.isNotEmpty() == true
+                // 有图就打成一个压缩包：文字和图片在一起；没图就只发 md
+                val out = if (hasImages) File(root, "知行导出_$stamp.zip").also { z -> withContext(Dispatchers.IO) { AiExport.zipDir(dir, z) } } else md
+                val mime = if (hasImages) "application/zip" else "text/markdown"
+                val saved = withContext(Dispatchers.IO) { AiExport.saveToDownloads(context, out, mime) }
+                val copied = text.length <= 100_000
+                if (copied) {
                     val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
                     cm.setPrimaryClip(ClipData.newPlainText("知行生活记录", text))
                 }
-                val uri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
+                val uri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", out)
                 val send = Intent(Intent.ACTION_SEND).apply {
-                    type = "text/plain"
+                    type = if (hasImages) "application/zip" else "text/plain"
                     putExtra(Intent.EXTRA_STREAM, uri)
                     putExtra(Intent.EXTRA_SUBJECT, "我的生活记录（知行导出）")
                     clipData = ClipData.newRawUri("知行生活记录", uri)
                     addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
                 }
                 context.startActivity(Intent.createChooser(send, "发给 AI").addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
-                text.length <= 100_000
+                saved
             }
-            onMessage(result.fold({ copied -> if (copied) "已复制，也可以直接分享给 AI App" else "记录太多没法复制，用分享发文件吧" }, { "导出失败：${it.message ?: "未知错误"}" }))
+            aiExporting = false
+            onMessage(result.fold({ saved -> if (saved != null) "已存到 $saved，也可以直接分享" else "已打包，直接分享给 AI 吧" }, { "导出失败：${it.message ?: "未知错误"}" }))
         }
     }
     if (showAiExport) {
-        AlertDialog(
+        ZhAlertDialog(
             onDismissRequest = { showAiExport = false },
             title = { Text("导出给 AI") },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text("把记录整理成一份文字，开头带给 AI 的说明。发给任意 AI，它读完就能大致了解你。")
-                    Text("只导出文字、账目和背词情况，照片视频只写数量。导出后由你自己决定发给谁。", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth().clickable { aiWithMedia = !aiWithMedia }) {
+                        Column(Modifier.weight(1f)) {
+                            Text("把照片和视频一起打包", fontWeight = FontWeight.SemiBold)
+                            Text("文字和图片放进一个压缩包，存到「下载/知行」；视频截开头、中间、结尾 3 帧拼成一张图。文字里写明每条记录对应哪张图。", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                        Switch(checked = aiWithMedia, onCheckedChange = { aiWithMedia = it })
+                    }
+                    Text("压缩包发给能读 zip 的 AI；不收 zip 的，解压后把文字和图片一起发。文字同时复制好了，只想发文字直接粘贴。", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     listOf(7 to "最近 7 天", 30 to "最近 30 天", null to "全部记录").forEach { (d, label) ->
-                        OutlinedButton(onClick = { showAiExport = false; exportForAi(d) }, modifier = Modifier.fillMaxWidth()) { Text(label) }
+                        OutlinedButton(onClick = { showAiExport = false; exportForAi(d, aiWithMedia) }, enabled = !aiExporting, modifier = Modifier.fillMaxWidth()) { Text(label) }
                     }
                 }
             },
@@ -2590,7 +3175,7 @@ private fun DataScreen(
         runCatching {
             @Suppress("DEPRECATION")
             context.packageManager.getPackageInfo(context.packageName, 0).versionName
-        }.getOrNull() ?: "0.5.0"
+        }.getOrNull() ?: "0.6.0"
     }
 
     fun timeText() = "%02d:%02d".format(reminderHour, reminderMinute)
@@ -2664,29 +3249,24 @@ private fun DataScreen(
             onMessage(result.fold({ "数据已导入" }, { "导入失败：${it.message ?: "未知错误"}" }))
         }
     }
-    LazyColumn(modifier.fillMaxSize().padding(horizontal = 20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        item {
-            Spacer(Modifier.height(4.dp))
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Column(Modifier.weight(1f)) {
-                    Text("我的", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
-                    Text("数据只在这台手机", color = MaterialTheme.colorScheme.onSurfaceVariant)
-                }
-                Surface(shape = CircleShape, color = MaterialTheme.colorScheme.primaryContainer, modifier = Modifier.size(38.dp)) {
-                    Box(contentAlignment = Alignment.Center) {
-                        Text("知", fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onPrimaryContainer)
-                    }
-                }
+    var page by remember { mutableStateOf("main") }   // main | settings | privacy
+    var showUpdate by remember { mutableStateOf(false) }
+    if (showUpdate) UpdateDialog(onDismiss = { showUpdate = false })
+    if (page != "main") BackHandler { page = "main" }
+    @Composable
+    fun SubHeader(title: String, sub: String) {
+        Spacer(Modifier.height(4.dp))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            IconButton(onClick = { page = "main" }) { Icon(Icons.Default.ChevronLeft, contentDescription = "返回") }
+            Column(Modifier.weight(1f)) {
+                Text(title, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
+                Text(sub, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
         }
-        item {
-            GlassCard(color = MaterialTheme.colorScheme.surface, shape = RoundedCornerShape(20.dp)) {
-                Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    Row(verticalAlignment = Alignment.CenterVertically) { Icon(Icons.Default.CloudOff, null, tint = MaterialTheme.colorScheme.primary); Spacer(Modifier.width(8.dp)); Text("离线可用", fontWeight = FontWeight.Bold) }
-                    Text("记录、单词、账目都保存在这台手机。换机前请先导出备份。", color = MaterialTheme.colorScheme.onSurfaceVariant)
-                }
-            }
-        }
+    }
+    when (page) {
+    "settings" -> LazyColumn(modifier.fillMaxSize().padding(horizontal = 20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        item { SubHeader("设置", "头像、通知、外观") }
         item {
             Text("头像和昵称", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
             Spacer(Modifier.height(8.dp))
@@ -2753,6 +3333,56 @@ private fun DataScreen(
             }
         }
         item {
+            // 自动记账：读微信 / 支付宝 / 云闪付的付款通知
+            val ctx = LocalContext.current
+            var hasAccess by remember { mutableStateOf(AutoBook.hasAccess(ctx)) }
+            var autoOn by remember { mutableStateOf(AutoBook.isEnabled(ctx)) }
+            var askFirst by remember { mutableStateOf(AutoBook.askFirst(ctx)) }
+            LifecycleResumeEffect(Unit) {
+                hasAccess = AutoBook.hasAccess(ctx)
+                onPauseOrDispose { }
+            }
+            Text("自动记账", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+            Spacer(Modifier.height(8.dp))
+            GlassCard(color = MaterialTheme.colorScheme.surface, shape = RoundedCornerShape(20.dp)) {
+                Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f)) {
+                            Text("付款后自动记一笔", fontWeight = FontWeight.SemiBold)
+                            Text(
+                                if (hasAccess) "已开启：会读微信、支付宝、云闪付的付款通知" else "要先在系统里给知行「通知使用权」",
+                                style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        if (hasAccess) {
+                            Switch(checked = autoOn, onCheckedChange = { autoOn = it; AutoBook.setEnabled(ctx, it) })
+                        } else {
+                            TextButton(onClick = { runCatching { ctx.startActivity(AutoBook.accessSettingsIntent(ctx)) } }) { Text("去开启") }
+                        }
+                    }
+                    if (hasAccess) {
+                        HorizontalDivider()
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Column(Modifier.weight(1f)) {
+                                Text("入账前先问我", fontWeight = FontWeight.SemiBold)
+                                Text(if (askFirst) "弹通知让你点「入账」，ColorOS 16 上进流体云" else "直接记入，通知里可以撤销", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
+                            Switch(checked = askFirst, onCheckedChange = { askFirst = it; AutoBook.setAskFirst(ctx, it) })
+                        }
+                        HorizontalDivider()
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Column(Modifier.weight(1f)) {
+                                Text("试一下", fontWeight = FontWeight.SemiBold)
+                                Text("发一条示例通知，不会真的记账", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
+                            TextButton(onClick = { AutoBook.prompt(ctx, Payment(3650, "示例商家", "微信支付", "餐饮"), demo = true) }) { Text("试一下") }
+                        }
+                    }
+                    Text("只在本机识别，不联网；退款、收款、红包、转账不记。OPPO 记得给知行开「自启动」，不然后台会被关。", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
+        }
+        item {
             Text("外观", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
             Spacer(Modifier.height(8.dp))
             GlassCard(color = MaterialTheme.colorScheme.surface, shape = RoundedCornerShape(20.dp)) {
@@ -2795,11 +3425,85 @@ private fun DataScreen(
                 }
             }
         }
+        item { Spacer(Modifier.height(88.dp)) }
+    }
+    "privacy" -> LazyColumn(modifier.fillMaxSize().padding(horizontal = 20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        item { SubHeader("隐私说明", "你的记录只属于你") }
+        val points = listOf(
+            Triple(Icons.Default.CloudOff, "平时不联网", "记录、单词、账目、照片和视频都只存在这台手机里，不会上传。只有你点「检查更新」时才联网，只下载版本信息和安装包，不发送你的任何数据。"),
+            Triple(Icons.Default.PhotoCamera, "用到的权限", "相机：拍照和录像；通知：每日提醒，可随时关；通知使用权：自动记账读付款通知，只看微信、支付宝、云闪付；网络和安装应用：只给「检查更新」用；存储：只在 Android 9 及以下存相册时用。"),
+            Triple(Icons.Default.Download, "导出由你决定", "备份、存相册、导出给 AI 都只在你点了之后才生成文件；发给谁、发不发，由你自己选。"),
+            Triple(Icons.Default.Delete, "删除", "删掉的记录连同照片和视频一起清掉。卸载知行会删除 App 里的数据，但「文档/知行」里的自动备份会留着，重装后可以恢复。")
+        )
+        items(points.size) { i ->
+            val (icon, title, body) = points[i]
+            GlassCard(color = MaterialTheme.colorScheme.surface, shape = RoundedCornerShape(20.dp)) {
+                Row(Modifier.fillMaxWidth().padding(18.dp)) {
+                    Box(Modifier.size(38.dp).clip(RoundedCornerShape(12.dp)).background(MaterialTheme.colorScheme.primary.copy(alpha = .16f)), contentAlignment = Alignment.Center) {
+                        Icon(icon, null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(20.dp))
+                    }
+                    Spacer(Modifier.width(14.dp))
+                    Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Text(title, fontWeight = FontWeight.Bold)
+                        Text(body, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                }
+            }
+        }
+        item { Spacer(Modifier.height(88.dp)) }
+    }
+    else -> LazyColumn(modifier.fillMaxSize().padding(horizontal = 20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        item {
+            // 头部：头像 + 昵称 + 设置入口
+            Spacer(Modifier.height(4.dp))
+            val avatarThumb = rememberBitmap(avatarPath, 256)
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Box(Modifier.size(56.dp).clip(CircleShape).clickable { page = "settings" }) {
+                    if (avatarThumb != null) Image(bitmap = avatarThumb, contentDescription = "头像", contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize())
+                    else AvatarFace(name = nickname, modifier = Modifier.fillMaxSize())
+                }
+                Spacer(Modifier.width(14.dp))
+                Column(Modifier.weight(1f)) {
+                    Text(nickname, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
+                    Text("数据只在这台手机", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
+        }
+        item {
+            GlassCard(color = MaterialTheme.colorScheme.surface, shape = RoundedCornerShape(20.dp)) {
+                Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) { Icon(Icons.Default.CloudOff, null, tint = MaterialTheme.colorScheme.primary); Spacer(Modifier.width(8.dp)); Text("离线可用", fontWeight = FontWeight.Bold) }
+                    Text("记录、单词、账目都保存在这台手机。离开知行会自动备份到「文档/知行」，换机时把那个文件拷过去恢复。", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
+        }
         item {
             Text("备份与恢复", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
             Spacer(Modifier.height(8.dp))
             Button(onClick = { export.launch("zhixing-backup.json") }, modifier = Modifier.fillMaxWidth()) { Text("导出本地备份") }
-            OutlinedButton(onClick = { import.launch(arrayOf("application/json", "text/plain")) }, modifier = Modifier.fillMaxWidth()) { Text("从备份恢复") }
+            OutlinedButton(onClick = { import.launch(arrayOf("application/zip", "application/json", "text/plain", "application/octet-stream")) }, modifier = Modifier.fillMaxWidth()) { Text("从备份恢复") }
+            if (com.swenhao10.localfirst.data.AutoBackup.supported()) {
+                var autoBackupOn by remember { mutableStateOf(com.swenhao10.localfirst.data.AutoBackup.isEnabled(context)) }
+                var lastBackup by remember { mutableStateOf(com.swenhao10.localfirst.data.AutoBackup.lastAt(context)) }
+                Spacer(Modifier.height(4.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text("自动备份", fontWeight = FontWeight.SemiBold)
+                        Text(
+                            if (lastBackup > 0) "上次 ${SimpleDateFormat("M月d日 HH:mm", Locale.CHINA).format(Date(lastBackup))} · 存在「文档/知行」，留最近 3 份" else "离开知行时备份到「文档/知行」，留最近 3 份",
+                            style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    TextButton(onClick = {
+                        scope.launch {
+                            val r = runCatching { withContext(Dispatchers.IO) { com.swenhao10.localfirst.data.AutoBackup.run(context, force = true) } }
+                            lastBackup = com.swenhao10.localfirst.data.AutoBackup.lastAt(context)
+                            onMessage(r.fold({ "已备份到「文档/知行」" }, { "备份失败：${it.message ?: "未知错误"}" }))
+                        }
+                    }) { Text("立即备份") }
+                    Switch(checked = autoBackupOn, onCheckedChange = { autoBackupOn = it; com.swenhao10.localfirst.data.AutoBackup.setEnabled(context, it) })
+                }
+            }
             OutlinedButton(
                 onClick = {
                     scope.launch {
@@ -2817,15 +3521,47 @@ private fun DataScreen(
             )
         }
         item {
-            HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
-            ListItem(leadingContent = { Icon(Icons.Default.Settings, null) }, headlineContent = { Text("隐私说明") }, supportingContent = { Text("首版不上传学习、习惯或账目记录") })
+            GlassCard(color = MaterialTheme.colorScheme.surface, shape = RoundedCornerShape(20.dp)) {
+                Column(Modifier.fillMaxWidth()) {
+                    MineRow(Icons.Default.Settings, "设置", "头像和昵称、通知、主题和外观") { page = "settings" }
+                    HorizontalDivider(Modifier.padding(start = 70.dp), color = MaterialTheme.colorScheme.onSurface.copy(alpha = .08f))
+                    MineRow(Icons.Default.Lock, "隐私说明", "平时不联网，记录只存在这台手机") { page = "privacy" }
+                    HorizontalDivider(Modifier.padding(start = 70.dp), color = MaterialTheme.colorScheme.onSurface.copy(alpha = .08f))
+                    MineRow(Icons.Default.Download, "检查更新", "当前 v$versionName，点了才联网") { showUpdate = true }
+                }
+            }
         }
         item {
-            Text("关于", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-            Spacer(Modifier.height(8.dp))
-            ListItem(headlineContent = { Text("知行") }, supportingContent = { Text("版本 $versionName") })
+            // 关于：居中的小标识 + 版本胶囊
+            Column(Modifier.fillMaxWidth().padding(top = 18.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                Box(Modifier.size(44.dp).clip(RoundedCornerShape(14.dp)).background(MaterialTheme.colorScheme.primary), contentAlignment = Alignment.Center) {
+                    Text("知", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 20.sp)
+                }
+                Text("知行", fontWeight = FontWeight.Bold)
+                Surface(color = MaterialTheme.colorScheme.onSurface.copy(alpha = .08f), shape = RoundedCornerShape(50)) {
+                    Text("v$versionName", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(horizontal = 10.dp, vertical = 3.dp))
+                }
+                Text("记下今天的每一件小事", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
         }
         item { Spacer(Modifier.height(88.dp)) }
+    }
+    }
+}
+
+/** 「我的」页里的一行入口：图标 + 标题 + 说明 + 右箭头。 */
+@Composable
+private fun MineRow(icon: ImageVector, title: String, sub: String, onClick: () -> Unit) {
+    Row(Modifier.fillMaxWidth().clickable(onClick = onClick).padding(horizontal = 18.dp, vertical = 14.dp), verticalAlignment = Alignment.CenterVertically) {
+        Box(Modifier.size(38.dp).clip(RoundedCornerShape(12.dp)).background(MaterialTheme.colorScheme.primary.copy(alpha = .16f)), contentAlignment = Alignment.Center) {
+            Icon(icon, null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(20.dp))
+        }
+        Spacer(Modifier.width(14.dp))
+        Column(Modifier.weight(1f)) {
+            Text(title, fontWeight = FontWeight.SemiBold)
+            Text(sub, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+        Icon(Icons.Default.ChevronRight, null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
     }
 }
 
@@ -2833,7 +3569,7 @@ private fun DataScreen(
 private fun AddCardDialog(dismiss: () -> Unit, save: (String, String) -> Unit) {
     var front by remember { mutableStateOf("") }
     var back by remember { mutableStateOf("") }
-    AlertDialog(
+    ZhAlertDialog(
         onDismissRequest = dismiss,
         title = { Text("添加学习卡片") },
         text = {
@@ -2923,20 +3659,39 @@ private fun labelFor(record: RecordEntry): String = when (record.kind) {
 /** 按图片路径解码一张缩略图（本机文件不存在或损坏返回 null）。 */
 @Composable
 private fun rememberBitmap(path: String?, maxDim: Int = 1024): androidx.compose.ui.graphics.ImageBitmap? {
-    return remember(path) {
-        if (path == null) return@remember null
-        if (isVideoPath(path)) return@remember videoFrame(path, maxDim)?.asImageBitmap()
-        try {
-            val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-            BitmapFactory.decodeFile(path, bounds)
-            if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return@remember null
-            var sample = 1
-            while (bounds.outWidth / sample > maxDim || bounds.outHeight / sample > maxDim) sample *= 2
-            val opts = BitmapFactory.Options().apply { inSampleSize = sample }
-            BitmapFactory.decodeFile(path, opts)?.asImageBitmap()
-        } catch (e: Exception) {
-            null
+    // 解码放到后台线程 + 内存缓存：以前在主线程同步解码，时间轴一滑就卡
+    val key = "$path@$maxDim"
+    val state = androidx.compose.runtime.produceState(initialValue = path?.let { BitmapCache.get(key) }, key) {
+        if (value == null && path != null) {
+            value = withContext(Dispatchers.IO) { decodeBitmapFile(path, maxDim) }?.also { BitmapCache.put(key, it) }
         }
+    }
+    return state.value
+}
+
+/** 解码过的图按字节数缓存，最多用 1/8 的可用内存。 */
+private object BitmapCache {
+    private val cache = object : android.util.LruCache<String, androidx.compose.ui.graphics.ImageBitmap>(
+        (Runtime.getRuntime().maxMemory() / 8).coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
+    ) {
+        override fun sizeOf(key: String, value: androidx.compose.ui.graphics.ImageBitmap) = value.width * value.height * 4
+    }
+    fun get(key: String) = cache.get(key)
+    fun put(key: String, bmp: androidx.compose.ui.graphics.ImageBitmap) { cache.put(key, bmp) }
+}
+
+private fun decodeBitmapFile(path: String, maxDim: Int): androidx.compose.ui.graphics.ImageBitmap? {
+    if (isVideoPath(path)) return videoFrame(path, maxDim)?.asImageBitmap()
+    return try {
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        BitmapFactory.decodeFile(path, bounds)
+        if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
+        var sample = 1
+        while (bounds.outWidth / sample > maxDim || bounds.outHeight / sample > maxDim) sample *= 2
+        val opts = BitmapFactory.Options().apply { inSampleSize = sample }
+        BitmapFactory.decodeFile(path, opts)?.asImageBitmap()
+    } catch (e: Throwable) {
+        null
     }
 }
 
@@ -2962,8 +3717,14 @@ private fun rememberUriBitmap(uri: Uri?, maxDim: Int = 512): androidx.compose.ui
 }
 
 /** 背单词的进度：放在 App 顶层 remember，切 Tab 或重进页面不会回到第一个词。 */
-private class StudyProgress(snapshot: StudySnapshot) {
-    var index by mutableStateOf(snapshot.index)
+private enum class StudyMode { BOOK, UNKNOWN }
+
+private class StudyProgress(snapshot: StudySnapshot, bookIndex: Int) {
+    var index by mutableStateOf(bookIndex)
+    /** 本轮要先过的复习词（或生词本），过完再学新词。 */
+    val queue = mutableStateListOf<PackWordLite>()
+    var reviewPos by mutableStateOf(0)
+    var mode by mutableStateOf(StudyMode.BOOK)
     var known by mutableStateOf(snapshot.known)
     var unknown by mutableStateOf(snapshot.unknown)
     var inStudy by mutableStateOf(snapshot.inStudy)
@@ -3003,4 +3764,105 @@ private fun photoUri(context: Context, file: File): Uri =
 @Composable
 private fun <T> useMemoized(vararg keys: Any?, calculate: () -> T): T {
     return remember(*keys) { calculate() }
+}
+
+
+/** 第一次打开（没有任何记录）时问一下要不要从备份恢复。重装后 App 读不到旧文件，只能让用户自己选。 */
+@Composable
+private fun RestorePrompt(db: AppDatabase) {
+    val context = LocalContext.current
+    val prefs = remember { context.getSharedPreferences("zhixing_backup", android.content.Context.MODE_PRIVATE) }
+    var show by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
+    LaunchedEffect(Unit) {
+        if (prefs.getBoolean("restore_asked", false)) return@LaunchedEffect
+        val empty = withContext(Dispatchers.IO) { db.records().all().isEmpty() && db.wordProgress().all().isEmpty() }
+        if (empty) show = true else prefs.edit().putBoolean("restore_asked", true).apply()
+    }
+    val picker = androidx.activity.compose.rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri != null) scope.launch {
+            val r = runCatching { withContext(Dispatchers.IO) { com.swenhao10.localfirst.data.DataTransfer.import(context, uri, db) } }
+            android.widget.Toast.makeText(context, r.fold({ "已恢复" }, { "恢复失败：${it.message ?: "未知错误"}" }), android.widget.Toast.LENGTH_LONG).show()
+        }
+    }
+    if (show) {
+        ZhAlertDialog(
+            onDismissRequest = { show = false; prefs.edit().putBoolean("restore_asked", true).apply() },
+            title = { Text("之前用过知行？") },
+            text = { Text("可以从手机「文档/知行」里的备份恢复，选最新的那个「知行备份-…zip」。以后也能在「我的 → 从备份恢复」里做。") },
+            confirmButton = {
+                TextButton(onClick = {
+                    show = false; prefs.edit().putBoolean("restore_asked", true).apply()
+                    picker.launch(arrayOf("application/zip", "application/json", "application/octet-stream"))
+                }) { Text("选择备份") }
+            },
+            dismissButton = { TextButton(onClick = { show = false; prefs.edit().putBoolean("restore_asked", true).apply() }) { Text("不用了") } }
+        )
+    }
+}
+
+/** 检查更新：只有点了才联网。 */
+@Composable
+private fun UpdateDialog(onDismiss: () -> Unit) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    var state by remember { mutableStateOf("checking") }  // checking | latest | found | downloading | failed | needPerm
+    var info by remember { mutableStateOf<com.swenhao10.localfirst.data.Updater.Info?>(null) }
+    var progress by remember { mutableStateOf(0f) }
+    var error by remember { mutableStateOf("") }
+    var apk by remember { mutableStateOf<File?>(null) }
+    val U = com.swenhao10.localfirst.data.Updater
+    fun check() {
+        state = "checking"
+        scope.launch {
+            val r = runCatching { withContext(Dispatchers.IO) { U.fetchLatest() } }
+            r.onSuccess { info = it; state = if (it.versionCode > U.currentVersionCode(context)) "found" else "latest" }
+             .onFailure { error = it.message ?: "网络不通"; state = "failed" }
+        }
+    }
+    fun tryInstall(file: File) {
+        if (!U.canInstall(context)) { state = "needPerm"; runCatching { context.startActivity(U.installPermissionIntent(context)) }; return }
+        runCatching { U.install(context, file) }.onFailure { error = it.message ?: "打不开安装器"; state = "failed" }
+    }
+    LaunchedEffect(Unit) { check() }
+    val i = info
+    val closeBtn: (@Composable () -> Unit)? = if (state == "latest" || state == "downloading") null else {
+        { TextButton(onClick = onDismiss) { Text("关闭") } }
+    }
+    ZhAlertDialog(
+        onDismissRequest = { if (state != "downloading") onDismiss() },
+        title = { Text(when (state) { "checking" -> "正在检查更新"; "latest" -> "已经是最新版"; "found" -> "有新版本 v${i?.versionName}"; "downloading" -> "正在下载"; "needPerm" -> "需要允许安装"; else -> "检查失败" }) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                when (state) {
+                    "checking" -> LinearProgressIndicator(Modifier.fillMaxWidth())
+                    "latest" -> Text("当前 v${i?.versionName ?: ""} 就是最新的。")
+                    "found" -> Text(i?.notes?.ifBlank { "修复和改进" } ?: "", style = MaterialTheme.typography.bodyMedium)
+                    "downloading" -> {
+                        LinearProgressIndicator(progress = { progress }, modifier = Modifier.fillMaxWidth())
+                        Text("${(progress * 100).toInt()}%，GitHub 不通会自动换加速线路", style = MaterialTheme.typography.labelMedium)
+                    }
+                    "needPerm" -> Text("在系统设置里允许「知行」安装应用，回来再点「安装」。")
+                    else -> Text("$error。可能是网络连不上 GitHub 和加速线路，稍后再试，或者直接装我发你的安装包。")
+                }
+            }
+        },
+        confirmButton = {
+            when (state) {
+                "found" -> TextButton(onClick = {
+                    val inf = i ?: return@TextButton
+                    state = "downloading"; progress = 0f
+                    scope.launch {
+                        val r = runCatching { withContext(Dispatchers.IO) { U.download(context, inf) { p -> progress = p } } }
+                        r.onSuccess { apk = it; state = "found"; tryInstall(it) }.onFailure { error = it.message ?: "下载失败"; state = "failed" }
+                    }
+                }) { Text(if (apk != null) "安装" else "下载并安装") }
+                "needPerm" -> TextButton(onClick = { apk?.let { tryInstall(it) } }) { Text("安装") }
+                "failed" -> TextButton(onClick = { check() }) { Text("重试") }
+                "downloading", "checking" -> {}
+                else -> TextButton(onClick = onDismiss) { Text("好") }
+            }
+        },
+        dismissButton = closeBtn
+    )
 }
