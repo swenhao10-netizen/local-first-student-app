@@ -1,0 +1,26 @@
+{
+  "schema_version": 2,
+  "pack_id": "org.zhixing.dev",
+  "name": "程序员英语词汇",
+  "language": "en",
+  "level": "Developer",
+  "entry_count": 260,
+  "version": "2026.11.12",
+  "released_at": "2026-11-12",
+  "license": {
+    "spdx": "MIT",
+    "url": "https://github.com/Wei-Xia/most-frequent-technology-english-words/blob/master/LICENSE",
+    "text_ref": "LICENSE.txt"
+  },
+  "source": {
+    "origin": "most-frequent-technology-english-words",
+    "author": "Wei Xia",
+    "contact": "https://github.com/Wei-Xia/most-frequent-technology-english-words",
+    "retrieved_at": "2026-11-12",
+    "note": "词形变化与词频取自 ECDICT（MIT）"
+  },
+  "checksum": {
+    "sha256_db": "54df375adf9a537df5542d266442a8c66bbe9fa93f66937468a0a9f186238b58",
+    "sha256_media": null
+  }
+}

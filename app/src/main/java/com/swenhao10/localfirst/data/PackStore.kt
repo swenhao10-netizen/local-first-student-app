@@ -36,7 +36,8 @@ object PackStore {
         WordBook("ky", "考研", "考研词汇", 4801),
         WordBook("ielts", "雅思", "雅思词汇", 5040),
         WordBook("toefl", "托福", "托福词汇", 6974),
-        WordBook("gre", "GRE", "GRE 词汇", 7504)
+        WordBook("gre", "GRE", "GRE 词汇", 7504),
+        WordBook("dev", "程序员", "程序员英语词汇", 260)
     )
     const val DEFAULT_BOOK = "cet46"
 
@@ -45,7 +46,7 @@ object PackStore {
     /** ECDICT 的标签 -> 中文考试名。 */
     fun tagLabel(tag: String): String? = when (tag) {
         "zk" -> "中考"; "gk" -> "高考"; "cet4" -> "四级"; "cet6" -> "六级"
-        "ky" -> "考研"; "ielts" -> "雅思"; "toefl" -> "托福"; "gre" -> "GRE"
+        "ky" -> "考研"; "ielts" -> "雅思"; "toefl" -> "托福"; "gre" -> "GRE"; "dev" -> "程序员"
         else -> null
     }
 

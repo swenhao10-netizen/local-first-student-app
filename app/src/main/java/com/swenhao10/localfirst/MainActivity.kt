@@ -41,12 +41,14 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.compose.material.icons.filled.ChevronRight
+import androidx.compose.material.icons.filled.ChevronLeft
 import com.swenhao10.localfirst.ui.LaunchAnimation
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.horizontalScroll
@@ -93,6 +95,7 @@ import androidx.compose.material.icons.filled.PhotoCamera
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -236,6 +239,31 @@ class MainActivity : ComponentActivity() {
 }
 
 /** v2 底部导航：记录（首页）/ 单词 / 总览 / 我的 */
+/** 应用内的轻提示：一颗小胶囊，跟玻璃风格一致，替代默认的大白条 Snackbar。 */
+@Composable
+private fun TipPill(text: String) {
+    val dark = MaterialTheme.colorScheme.background.red < 0.5f
+    val shape = RoundedCornerShape(50)
+    Box(Modifier.fillMaxWidth().padding(bottom = 8.dp), contentAlignment = Alignment.Center) {
+        Row(
+            Modifier
+                .widthIn(max = 320.dp)
+                .then(if (LocalBackdrop.current != null) Modifier.glass(shape, if (dark) Color(0xB3181C1C) else Color(0xCCFFFFFF)) else Modifier.clip(shape).background(MaterialTheme.colorScheme.inverseSurface))
+                .padding(horizontal = 16.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Box(Modifier.size(8.dp).clip(CircleShape).background(MaterialTheme.colorScheme.primary))
+            Spacer(Modifier.width(10.dp))
+            Text(
+                text,
+                style = MaterialTheme.typography.labelLarge,
+                color = if (LocalBackdrop.current != null) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.inverseOnSurface,
+                maxLines = 2
+            )
+        }
+    }
+}
+
 private enum class Tab(val label: String) { RECORD("记录"), WORDS("单词"), OVERVIEW("总览"), DATA("我的") }
 
 private val ZhixingColors = lightColorScheme(
@@ -699,7 +727,7 @@ private fun LocalFirstApp(db: AppDatabase) {
         Scaffold(
             containerColor = if (glassOn) Color.Transparent else MaterialTheme.colorScheme.background,
             contentColor = MaterialTheme.colorScheme.onBackground,
-            snackbarHost = { SnackbarHost(snackbarHostState) },
+            snackbarHost = { SnackbarHost(snackbarHostState) { data -> TipPill(data.visuals.message) } },
             bottomBar = {
                 if (glassOn) {
                     GlassBottomBar(selected = tab, onSelect = { tab = it }, onAdd = {
@@ -736,7 +764,7 @@ private fun LocalFirstApp(db: AppDatabase) {
                             editingRecord = null
                             showAddRecord = true
                         },
-                        onSearch = { message = "搜索这次只放了入口，功能还没做" },
+                        onSearch = { message = "搜索还在做，下个版本见" },
                         modifier = Modifier.padding(padding),
                         onEditRecord = { record ->
                             editingRecord = record
@@ -2019,6 +2047,7 @@ private fun WordsScreen(
     var showBookPicker by remember { mutableStateOf(false) }
     var cardToDelete by remember { mutableStateOf<VocabularyCard?>(null) }
     var detailWord by remember { mutableStateOf<PackWordLite?>(null) }
+    var showUnknownBook by remember { mutableStateOf(false) }
     val total = packWords.size
     val wordMap = remember(packWords) { packWords.associateBy { it.headword } }
 
@@ -2280,6 +2309,63 @@ private fun WordsScreen(
         return
     }
 
+    if (showUnknownBook) {
+        BackHandler { showUnknownBook = false }
+        LazyColumn(modifier.fillMaxSize().padding(horizontal = 20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            item {
+                Spacer(Modifier.height(4.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    IconButton(onClick = { showUnknownBook = false }) { Icon(Icons.Default.ChevronLeft, contentDescription = "返回") }
+                    Column(Modifier.weight(1f)) {
+                        Text("生词本", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
+                        Text("${unknownWords.size} 个 · 连续认识 ${WordStudy.UNKNOWN_GRADUATE} 次自动移出", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                }
+            }
+            if (unknownWords.isNotEmpty()) item {
+                Button(
+                    onClick = { startUnknownReview() },
+                    modifier = Modifier.fillMaxWidth().height(50.dp),
+                    shape = RoundedCornerShape(50),
+                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
+                ) { Icon(Icons.Default.PlayArrow, null); Spacer(Modifier.width(6.dp)); Text("复习生词本", fontWeight = FontWeight.SemiBold) }
+            }
+        if (unknownWords.isEmpty()) {
+            item { EmptyCard("生词本是空的", "背词时点「不认识」的词会自动放进来") }
+        } else {
+            items(unknownWords, key = { "unknown-${it.id}" }) { word ->
+                var expanded by remember { mutableStateOf(false) }
+                GlassCard(color = MaterialTheme.colorScheme.surface, shape = RoundedCornerShape(18.dp), onClick = { detailWord = word.lite() }) {
+                    Column(Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 14.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Column(Modifier.weight(1f)) {
+                                Text(word.headword, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                                Text(
+                                    listOfNotNull(word.phonetic?.takeIf { it.isNotBlank() }?.let { "/${PackStore.cleanPhonetic(it)}/" }, "认识 ${word.knownCount}/${WordStudy.UNKNOWN_GRADUATE}").joinToString(" · "),
+                                    style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                            Surface(
+                                color = MaterialTheme.colorScheme.primary.copy(alpha = .14f),
+                                shape = RoundedCornerShape(50),
+                                modifier = Modifier.clip(RoundedCornerShape(50)).clickable { expanded = !expanded }
+                            ) {
+                                Text(if (expanded) "收起" else "看意思", color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelLarge, modifier = Modifier.padding(horizontal = 14.dp, vertical = 7.dp))
+                            }
+                        }
+                        if (expanded) Text(word.meaning.replace("；", "\n"))
+                    }
+                }
+            }
+        }
+            item { Spacer(Modifier.height(88.dp)) }
+        }
+        detailWord?.let { w ->
+            WordDetailDialog(w, wordMap[w.headword], unknownWords.firstOrNull { it.headword == w.headword }, progressDao, unknownDao, onSpeak = { speak(it) }, onDismiss = { detailWord = null })
+        }
+        return
+    }
+
     LazyColumn(modifier.fillMaxSize().padding(horizontal = 20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         item {
             Spacer(Modifier.height(4.dp))
@@ -2347,37 +2433,27 @@ private fun WordsScreen(
             }
         }
         item {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text("不记得的单词", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-                Text(" ${unknownWords.size} 个", style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.weight(1f))
-                if (unknownWords.isNotEmpty()) TextButton(onClick = { startUnknownReview() }) { Text("复习生词本") }
-            }
-        }
-        if (unknownWords.isEmpty()) {
-            item { EmptyCard("生词本是空的", "背词时点「不认识」的词会自动放进来") }
-        } else {
-            items(unknownWords, key = { "unknown-${it.id}" }) { word ->
-                var expanded by remember { mutableStateOf(false) }
-                GlassCard(color = MaterialTheme.colorScheme.surface, shape = RoundedCornerShape(18.dp), onClick = { detailWord = word.lite() }) {
-                    Column(Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 14.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Column(Modifier.weight(1f)) {
-                                Text(word.headword, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-                                Text(
-                                    listOfNotNull(word.phonetic?.takeIf { it.isNotBlank() }?.let { "/${PackStore.cleanPhonetic(it)}/" }, "认识 ${word.knownCount}/${WordStudy.UNKNOWN_GRADUATE}").joinToString(" · "),
-                                    style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                            }
-                            Surface(
-                                color = MaterialTheme.colorScheme.primary.copy(alpha = .14f),
-                                shape = RoundedCornerShape(50),
-                                modifier = Modifier.clip(RoundedCornerShape(50)).clickable { expanded = !expanded }
-                            ) {
-                                Text(if (expanded) "收起" else "看意思", color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelLarge, modifier = Modifier.padding(horizontal = 14.dp, vertical = 7.dp))
-                            }
-                        }
-                        if (expanded) Text(word.meaning.replace("；", "\n"))
+            // 生词本只放一个入口，点进去单独一页
+            GlassCard(color = MaterialTheme.colorScheme.surface, shape = RoundedCornerShape(20.dp), onClick = { showUnknownBook = true }) {
+                Row(Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 16.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Box(Modifier.size(42.dp).clip(RoundedCornerShape(14.dp)).background(MaterialTheme.colorScheme.primary.copy(alpha = .16f)), contentAlignment = Alignment.Center) {
+                        Icon(Icons.Default.MenuBook, null, tint = MaterialTheme.colorScheme.primary)
                     }
+                    Spacer(Modifier.width(14.dp))
+                    Column(Modifier.weight(1f)) {
+                        Text("生词本", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                        Text(
+                            if (unknownWords.isEmpty()) "背词时点「不认识」会放进来" else "${unknownWords.size} 个词 · 连续认识 ${WordStudy.UNKNOWN_GRADUATE} 次移出",
+                            style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    if (unknownWords.isNotEmpty()) {
+                        Surface(color = MaterialTheme.colorScheme.primary.copy(alpha = .14f), shape = RoundedCornerShape(50)) {
+                            Text("${unknownWords.size}", color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold, modifier = Modifier.padding(horizontal = 10.dp, vertical = 3.dp))
+                        }
+                        Spacer(Modifier.width(4.dp))
+                    }
+                    Icon(Icons.Default.ChevronRight, null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             }
         }
@@ -2841,7 +2917,7 @@ private fun DataScreen(
         runCatching {
             @Suppress("DEPRECATION")
             context.packageManager.getPackageInfo(context.packageName, 0).versionName
-        }.getOrNull() ?: "0.5.0"
+        }.getOrNull() ?: "0.6.0"
     }
 
     fun timeText() = "%02d:%02d".format(reminderHour, reminderMinute)
@@ -2915,29 +2991,22 @@ private fun DataScreen(
             onMessage(result.fold({ "数据已导入" }, { "导入失败：${it.message ?: "未知错误"}" }))
         }
     }
-    LazyColumn(modifier.fillMaxSize().padding(horizontal = 20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        item {
-            Spacer(Modifier.height(4.dp))
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Column(Modifier.weight(1f)) {
-                    Text("我的", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
-                    Text("数据只在这台手机", color = MaterialTheme.colorScheme.onSurfaceVariant)
-                }
-                Surface(shape = CircleShape, color = MaterialTheme.colorScheme.primaryContainer, modifier = Modifier.size(38.dp)) {
-                    Box(contentAlignment = Alignment.Center) {
-                        Text("知", fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onPrimaryContainer)
-                    }
-                }
+    var page by remember { mutableStateOf("main") }   // main | settings | privacy
+    if (page != "main") BackHandler { page = "main" }
+    @Composable
+    fun SubHeader(title: String, sub: String) {
+        Spacer(Modifier.height(4.dp))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            IconButton(onClick = { page = "main" }) { Icon(Icons.Default.ChevronLeft, contentDescription = "返回") }
+            Column(Modifier.weight(1f)) {
+                Text(title, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
+                Text(sub, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
         }
-        item {
-            GlassCard(color = MaterialTheme.colorScheme.surface, shape = RoundedCornerShape(20.dp)) {
-                Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    Row(verticalAlignment = Alignment.CenterVertically) { Icon(Icons.Default.CloudOff, null, tint = MaterialTheme.colorScheme.primary); Spacer(Modifier.width(8.dp)); Text("离线可用", fontWeight = FontWeight.Bold) }
-                    Text("记录、单词、账目都保存在这台手机。换机前请先导出备份。", color = MaterialTheme.colorScheme.onSurfaceVariant)
-                }
-            }
-        }
+    }
+    when (page) {
+    "settings" -> LazyColumn(modifier.fillMaxSize().padding(horizontal = 20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        item { SubHeader("设置", "头像、通知、外观") }
         item {
             Text("头像和昵称", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
             Spacer(Modifier.height(8.dp))
@@ -3046,6 +3115,59 @@ private fun DataScreen(
                 }
             }
         }
+        item { Spacer(Modifier.height(88.dp)) }
+    }
+    "privacy" -> LazyColumn(modifier.fillMaxSize().padding(horizontal = 20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        item { SubHeader("隐私说明", "你的记录只属于你") }
+        val points = listOf(
+            Triple(Icons.Default.CloudOff, "不联网", "知行没有申请网络权限，记录、单词、账目、照片和视频都只存在这台手机里，不会上传。"),
+            Triple(Icons.Default.PhotoCamera, "用到的权限", "相机：拍照和录像；通知：每日提醒，可随时关；存储：只在 Android 9 及以下存相册时用。"),
+            Triple(Icons.Default.Download, "导出由你决定", "备份、存相册、导出给 AI 都只在你点了之后才生成文件；发给谁、发不发，由你自己选。"),
+            Triple(Icons.Default.Delete, "删除", "删掉的记录连同照片和视频一起清掉。卸载知行会删除全部数据，卸载前记得先导出备份。")
+        )
+        items(points.size) { i ->
+            val (icon, title, body) = points[i]
+            GlassCard(color = MaterialTheme.colorScheme.surface, shape = RoundedCornerShape(20.dp)) {
+                Row(Modifier.fillMaxWidth().padding(18.dp)) {
+                    Box(Modifier.size(38.dp).clip(RoundedCornerShape(12.dp)).background(MaterialTheme.colorScheme.primary.copy(alpha = .16f)), contentAlignment = Alignment.Center) {
+                        Icon(icon, null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(20.dp))
+                    }
+                    Spacer(Modifier.width(14.dp))
+                    Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Text(title, fontWeight = FontWeight.Bold)
+                        Text(body, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                }
+            }
+        }
+        item { Spacer(Modifier.height(88.dp)) }
+    }
+    else -> LazyColumn(modifier.fillMaxSize().padding(horizontal = 20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        item {
+            // 头部：头像 + 昵称 + 设置入口
+            Spacer(Modifier.height(4.dp))
+            val avatarThumb = rememberBitmap(avatarPath, 256)
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Box(Modifier.size(56.dp).clip(CircleShape).clickable { page = "settings" }) {
+                    if (avatarThumb != null) Image(bitmap = avatarThumb, contentDescription = "头像", contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize())
+                    else AvatarFace(name = nickname, modifier = Modifier.fillMaxSize())
+                }
+                Spacer(Modifier.width(14.dp))
+                Column(Modifier.weight(1f)) {
+                    Text(nickname, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
+                    Text("数据只在这台手机", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+                IconButton(onClick = { page = "settings" }) { Icon(Icons.Default.Settings, contentDescription = "设置") }
+            }
+        }
+        item {
+            GlassCard(color = MaterialTheme.colorScheme.surface, shape = RoundedCornerShape(20.dp)) {
+                Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) { Icon(Icons.Default.CloudOff, null, tint = MaterialTheme.colorScheme.primary); Spacer(Modifier.width(8.dp)); Text("离线可用", fontWeight = FontWeight.Bold) }
+                    Text("记录、单词、账目都保存在这台手机。换机前请先导出备份。", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
+        }
         item {
             Text("备份与恢复", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
             Spacer(Modifier.height(8.dp))
@@ -3068,15 +3190,45 @@ private fun DataScreen(
             )
         }
         item {
-            HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
-            ListItem(leadingContent = { Icon(Icons.Default.Settings, null) }, headlineContent = { Text("隐私说明") }, supportingContent = { Text("首版不上传学习、习惯或账目记录") })
+            GlassCard(color = MaterialTheme.colorScheme.surface, shape = RoundedCornerShape(20.dp)) {
+                Column(Modifier.fillMaxWidth()) {
+                    MineRow(Icons.Default.Settings, "设置", "头像和昵称、通知、主题和外观") { page = "settings" }
+                    HorizontalDivider(Modifier.padding(start = 70.dp), color = MaterialTheme.colorScheme.onSurface.copy(alpha = .08f))
+                    MineRow(Icons.Default.Lock, "隐私说明", "不联网，记录只存在这台手机") { page = "privacy" }
+                }
+            }
         }
         item {
-            Text("关于", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-            Spacer(Modifier.height(8.dp))
-            ListItem(headlineContent = { Text("知行") }, supportingContent = { Text("版本 $versionName") })
+            // 关于：居中的小标识 + 版本胶囊
+            Column(Modifier.fillMaxWidth().padding(top = 18.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                Box(Modifier.size(44.dp).clip(RoundedCornerShape(14.dp)).background(MaterialTheme.colorScheme.primary), contentAlignment = Alignment.Center) {
+                    Text("知", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 20.sp)
+                }
+                Text("知行", fontWeight = FontWeight.Bold)
+                Surface(color = MaterialTheme.colorScheme.onSurface.copy(alpha = .08f), shape = RoundedCornerShape(50)) {
+                    Text("v$versionName", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(horizontal = 10.dp, vertical = 3.dp))
+                }
+                Text("记下今天的每一件小事", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
         }
         item { Spacer(Modifier.height(88.dp)) }
+    }
+    }
+}
+
+/** 「我的」页里的一行入口：图标 + 标题 + 说明 + 右箭头。 */
+@Composable
+private fun MineRow(icon: ImageVector, title: String, sub: String, onClick: () -> Unit) {
+    Row(Modifier.fillMaxWidth().clickable(onClick = onClick).padding(horizontal = 18.dp, vertical = 14.dp), verticalAlignment = Alignment.CenterVertically) {
+        Box(Modifier.size(38.dp).clip(RoundedCornerShape(12.dp)).background(MaterialTheme.colorScheme.primary.copy(alpha = .16f)), contentAlignment = Alignment.Center) {
+            Icon(icon, null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(20.dp))
+        }
+        Spacer(Modifier.width(14.dp))
+        Column(Modifier.weight(1f)) {
+            Text(title, fontWeight = FontWeight.SemiBold)
+            Text(sub, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+        Icon(Icons.Default.ChevronRight, null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
     }
 }
 
