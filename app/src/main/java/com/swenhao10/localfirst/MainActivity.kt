@@ -1,5 +1,19 @@
 package com.swenhao10.localfirst
 
+import android.speech.tts.TextToSpeech
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.material.icons.filled.VolumeUp
+import androidx.compose.material3.ListItemDefaults
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.rememberScrollState
+import java.text.SimpleDateFormat
+import java.util.Date
+import com.swenhao10.localfirst.data.AppDatabase
+import com.swenhao10.localfirst.data.PackWordLite
+import com.swenhao10.localfirst.data.WordProgress
+import com.swenhao10.localfirst.data.WordProgressDao
+import com.swenhao10.localfirst.data.WordStudy
+import com.swenhao10.localfirst.data.lite
 import android.Manifest
 import android.app.TimePickerDialog
 import android.content.Context
@@ -59,12 +73,10 @@ import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardOptions
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AccountBalanceWallet
 import androidx.compose.material.icons.filled.Add
@@ -159,7 +171,6 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
-import com.swenhao10.localfirst.data.AppDatabase
 import com.swenhao10.localfirst.data.CardDao
 import com.swenhao10.localfirst.data.DataTransfer
 import com.swenhao10.localfirst.data.PackMeta
@@ -201,9 +212,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.FileOutputStream
-import java.text.SimpleDateFormat
 import java.util.Calendar
-import java.util.Date
 import java.util.Locale
 
 class MainActivity : ComponentActivity() {
@@ -644,7 +653,8 @@ private fun LocalFirstApp(db: AppDatabase) {
         }
     }
     // 背单词的学习进度：提到这里，切 Tab / 重进页面不再从头开始
-    val study = remember { StudyProgress(SettingsStore.getStudyProgress(context)) }
+    var bookId by remember { mutableStateOf(SettingsStore.getBookId(context)) }
+    val study = remember { StudyProgress(SettingsStore.getStudyProgress(context), SettingsStore.getBookIndex(context, SettingsStore.getBookId(context))) }
     val useDarkTheme = when (themeMode) {
         ThemeMode.LIGHT -> false
         ThemeMode.DARK -> true
@@ -660,12 +670,15 @@ private fun LocalFirstApp(db: AppDatabase) {
                 SettingsStore.setSeedCardsCleaned(context)
             }
         }
-        // 内置词包：首次打开把 pack.db 从 assets 复制到本机，再只读加载，离线可用
+    }
+    // 词书：用到哪本就从 assets 复制哪本到本机，再只读加载，离线可用；换书时重新加载
+    LaunchedEffect(bookId) {
+        packReady = false
         withContext(Dispatchers.IO) {
-            packMeta = PackStore.loadMeta(context)
-            packWords = PackStore.loadWords(context)
-            packReady = true
+            packMeta = PackStore.loadMeta(context, bookId)
+            packWords = PackStore.loadWords(context, bookId)
         }
+        packReady = true
     }
 
     val baseScheme = paletteFor(paletteId, useDarkTheme)
@@ -736,13 +749,18 @@ private fun LocalFirstApp(db: AppDatabase) {
                     )
                     Tab.WORDS -> WordsScreen(
                         packWords = packWords,
-                        packMeta = packMeta,
                         packReady = packReady,
+                        bookId = bookId,
+                        onChangeBook = { id ->
+                            SettingsStore.setBookIndex(context, bookId, study.index)
+                            SettingsStore.setBookId(context, id)
+                            study.index = SettingsStore.getBookIndex(context, id)
+                            bookId = id
+                            message = "已换成「${PackStore.book(id).shortName}」"
+                        },
                         unknownWords = unknownWords,
                         cards = cards,
-                        recordsDao = recordsDao,
-                        unknownDao = unknownDao,
-                        cardsDao = cardsDao,
+                        db = db,
                         study = study,
                         modifier = Modifier.padding(padding),
                         onMessage = { message = it }
@@ -1970,30 +1988,63 @@ private fun PaletteChip(label: String, dotColor: Color, selected: Boolean, onCli
     }
 }
 
-/** 单词：内置四六级词包卡片流 + 不记得的单词 + 自己加的卡片。 */
+/** 单词：选词书、卡片背词（复习优先）、今日统计、生词本、自己加的卡片。 */
 @Composable
 private fun WordsScreen(
     packWords: List<PackWord>,
-    packMeta: PackMeta?,
     packReady: Boolean,
+    bookId: String,
+    onChangeBook: (String) -> Unit,
     unknownWords: List<UnknownWord>,
     cards: List<VocabularyCard>,
-    recordsDao: RecordDao,
-    unknownDao: UnknownWordDao,
-    cardsDao: CardDao,
+    db: AppDatabase,
     study: StudyProgress,
     modifier: Modifier,
     onMessage: (String) -> Unit
 ) {
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
+    val recordsDao = remember(db) { db.records() }
+    val unknownDao = remember(db) { db.unknownWords() }
+    val cardsDao = remember(db) { db.cards() }
+    val progressDao = remember(db) { db.wordProgress() }
+    val dayDao = remember(db) { db.studyDays() }
+    val book = PackStore.book(bookId)
     var showAddCard by remember { mutableStateOf(false) }
-    // 不记得的单词：收进一个单独页面，单词页上只留一个入口
-    var showUnknownPage by remember { mutableStateOf(false) }
+    var showBookPicker by remember { mutableStateOf(false) }
     var cardToDelete by remember { mutableStateOf<VocabularyCard?>(null) }
+    var detailWord by remember { mutableStateOf<PackWordLite?>(null) }
     val total = packWords.size
-    // 进度在外层保存（切 Tab 不丢），这里每次变动写回本机
-    fun saveProgress() = SettingsStore.setStudyProgress(context, study.snapshot())
+    val wordMap = remember(packWords) { packWords.associateBy { it.headword } }
+
+    // 统计：待复习 / 今日 / 学习天数；每次进出学习刷新一下「现在」
+    val nowKey = remember(study.inStudy) { System.currentTimeMillis() }
+    val dueCount by remember(nowKey) { progressDao.observeDueCount(nowKey) }.collectAsState(initial = 0)
+    val learnedCount by remember { progressDao.observeLearnedCount() }.collectAsState(initial = 0)
+    val masteredCount by remember { progressDao.observeMasteredCount(WordStudy.MASTERED_STAGE) }.collectAsState(initial = 0)
+    val days by remember { dayDao.observeAll() }.collectAsState(initial = emptyList())
+    val today = days.firstOrNull { it.day == WordStudy.today() }
+    val studyDays = days.count { it.newCount + it.reviewCount > 0 }
+    val streak = WordStudy.streak(days)
+
+    // 发音：用手机自带的英文朗读，离线可用
+    var tts by remember { mutableStateOf<TextToSpeech?>(null) }
+    DisposableEffect(Unit) {
+        var engine: TextToSpeech? = null
+        engine = TextToSpeech(context) { status ->
+            if (status == TextToSpeech.SUCCESS) { engine?.language = Locale.US; tts = engine }
+        }
+        onDispose { engine?.shutdown(); tts = null }
+    }
+    fun speak(word: String) {
+        val t = tts
+        if (t == null) onMessage("手机没有可用的英文朗读引擎") else t.speak(word, TextToSpeech.QUEUE_FLUSH, null, word)
+    }
+
+    fun saveProgress() {
+        SettingsStore.setStudyProgress(context, study.snapshot())
+        SettingsStore.setBookIndex(context, bookId, study.index)
+    }
 
     fun finishSession() {
         val reviewed = study.known + study.unknown
@@ -2005,225 +2056,221 @@ private fun WordsScreen(
             }
             onMessage("已记到记录里")
         }
-        // 退出学习不清零位置：下次点「继续学习」还从这一张接着背
         study.showMeaning = false; study.known = 0; study.unknown = 0; study.inStudy = false
-        saveProgress()
-    }
-    fun nextWord() {
-        study.showMeaning = false
-        if (study.index + 1 >= total) finishSession() else { study.index += 1; saveProgress() }
-    }
-    fun startSession(resume: Boolean = true) {
-        if (total == 0) {
-            onMessage("内置词包还没准备好")
-            return
-        }
-        study.index = study.index.coerceIn(0, total - 1)
-        // 继续学习就接着上次的位置；只有「重新开始」才从头来
-        if (!resume) { study.index = 0; study.known = 0; study.unknown = 0 }
-        study.inStudy = true
-        study.showMeaning = false
+        study.queue.clear(); study.reviewPos = 0; study.mode = StudyMode.BOOK
         saveProgress()
     }
 
-    if (study.inStudy && packWords.isNotEmpty()) {
-        val index = study.index.coerceIn(0, total - 1)
-        val word = packWords[index]
+    /** 开始背词：先过到期的复习词（记错多的优先），再接着学新词。 */
+    fun startSession(resume: Boolean = true) {
+        if (total == 0) { onMessage("词书还没准备好"); return }
+        scope.launch {
+            val due = withContext(Dispatchers.IO) { progressDao.due(System.currentTimeMillis(), 200) }
+            study.queue.clear(); study.queue.addAll(due.map { it.lite() })
+            study.reviewPos = 0
+            study.mode = StudyMode.BOOK
+            study.index = study.index.coerceIn(0, total - 1)
+            if (!resume) { study.index = 0; study.known = 0; study.unknown = 0 }
+            study.inStudy = true
+            study.showMeaning = false
+            saveProgress()
+        }
+    }
+
+    /** 只复习生词本。 */
+    fun startUnknownReview() {
+        if (unknownWords.isEmpty()) { onMessage("生词本是空的"); return }
+        study.queue.clear()
+        study.queue.addAll(unknownWords.sortedBy { it.knownCount }.map { it.lite() })
+        study.reviewPos = 0
+        study.mode = StudyMode.UNKNOWN
+        study.known = 0; study.unknown = 0
+        study.showMeaning = false
+        study.inStudy = true
+    }
+
+    if (study.inStudy && (packWords.isNotEmpty() || study.mode == StudyMode.UNKNOWN)) {
+        val inQueue = study.reviewPos < study.queue.size
+        if (study.mode == StudyMode.UNKNOWN && !inQueue) {
+            // 生词本过完一轮
+            LaunchedEffect(Unit) { finishSession() }
+            return
+        }
+        val index = study.index.coerceIn(0, (total - 1).coerceAtLeast(0))
+        val isReview = inQueue
+        val lite: PackWordLite = if (inQueue) study.queue[study.reviewPos] else packWords[index].lite()
+        val full: PackWord? = wordMap[lite.headword]
+        var progress by remember(lite.headword) { mutableStateOf<WordProgress?>(null) }
+        LaunchedEffect(lite.headword) { progress = withContext(Dispatchers.IO) { progressDao.get(lite.headword) } }
+        val unknownEntry = unknownWords.firstOrNull { it.headword == lite.headword }
         val warnColor = MaterialTheme.colorScheme.secondary
+
+        fun answer(known: Boolean) {
+            if (known) study.known += 1 else study.unknown += 1
+            study.showMeaning = true
+            saveProgress()
+            val wasNew = progress == null
+            scope.launch {
+                withContext(Dispatchers.IO) {
+                    progressDao.upsert(WordStudy.answer(progressDao.get(lite.headword), lite, known))
+                    WordStudy.bumpToday(dayDao, isNew = wasNew && !isReview)
+                    if (study.mode == StudyMode.UNKNOWN) {
+                        val cur = unknownDao.all().firstOrNull { it.headword == lite.headword }
+                        if (cur != null) {
+                            if (!known) unknownDao.setKnownCount(lite.headword, 0)
+                            else if (cur.knownCount + 1 >= WordStudy.UNKNOWN_GRADUATE) unknownDao.deleteByHeadword(lite.headword)
+                            else unknownDao.setKnownCount(lite.headword, cur.knownCount + 1)
+                        }
+                    } else if (!known) {
+                        if (unknownDao.countByHeadword(lite.headword) == 0) {
+                            unknownDao.insert(UnknownWord(headword = lite.headword, phonetic = lite.phonetic, meaning = lite.meaning))
+                        } else unknownDao.setKnownCount(lite.headword, 0)
+                    }
+                }
+            }
+        }
+        fun next() {
+            study.showMeaning = false
+            if (isReview) {
+                study.reviewPos += 1
+                if (study.mode == StudyMode.UNKNOWN && study.reviewPos >= study.queue.size) finishSession()
+            } else if (study.index + 1 >= total) finishSession()
+            else { study.index += 1; saveProgress() }
+        }
+
+        val label = when {
+            study.mode == StudyMode.UNKNOWN -> "生词本"
+            isReview -> "${book.shortName} · 复习"
+            else -> "${book.shortName} · 新词"
+        }
+        val counter = if (isReview) "${study.reviewPos + 1} / ${study.queue.size}" else "${index + 1} / $total"
+        val frac = if (isReview) (study.reviewPos + 1f) / study.queue.size.coerceAtLeast(1) else if (total == 0) 0f else (index + 1f) / total
+
         Column(modifier.fillMaxSize().padding(horizontal = 20.dp)) {
             Spacer(Modifier.height(4.dp))
-            // 顶栏：左边退出，中间进度计数
             Box(Modifier.fillMaxWidth()) {
                 TextButton(
                     onClick = { finishSession() },
                     contentPadding = androidx.compose.foundation.layout.PaddingValues(0.dp),
                     modifier = Modifier.align(Alignment.CenterStart)
                 ) { Text("‹ 结束", color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.SemiBold) }
-                Text(
-                    "${index + 1} / $total",
-                    fontWeight = FontWeight.Bold,
-                    modifier = Modifier.align(Alignment.Center)
-                )
+                Text(label, fontWeight = FontWeight.Bold, modifier = Modifier.align(Alignment.Center))
+                Text(counter, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.align(Alignment.CenterEnd))
             }
             Spacer(Modifier.height(8.dp))
             LinearProgressIndicator(
-                progress = { if (total == 0) 0f else (index + 1).toFloat() / total },
+                progress = { frac },
                 modifier = Modifier.fillMaxWidth().height(8.dp).clip(RoundedCornerShape(50)),
                 color = MaterialTheme.colorScheme.primary,
                 trackColor = MaterialTheme.colorScheme.surfaceVariant,
                 drawStopIndicator = {}
             )
-            Spacer(Modifier.height(16.dp))
-            // 词卡：标签 / 单词 / 音标 / 分隔线 / 释义 / 来源
-            GlassCard(color = MaterialTheme.colorScheme.surface, shape = RoundedCornerShape(28.dp), modifier = Modifier.fillMaxWidth()) {
+            Spacer(Modifier.height(12.dp))
+            val wrong = progress?.wrongCount ?: 0
+            if (wrong > 0 || (study.mode == StudyMode.UNKNOWN && unknownEntry != null)) {
+                Surface(color = warnColor.copy(alpha = .14f), shape = RoundedCornerShape(50)) {
+                    Text(
+                        if (study.mode == StudyMode.UNKNOWN) "生词 · 已认识 ${unknownEntry?.knownCount ?: 0}/${WordStudy.UNKNOWN_GRADUATE}" else "记错 $wrong 次 · 优先复习",
+                        style = MaterialTheme.typography.labelLarge, color = warnColor,
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 5.dp)
+                    )
+                }
+                Spacer(Modifier.height(10.dp))
+            }
+            GlassCard(
+                color = MaterialTheme.colorScheme.surface,
+                shape = RoundedCornerShape(28.dp),
+                modifier = Modifier.fillMaxWidth(),
+                onClick = { if (study.showMeaning) detailWord = lite }
+            ) {
                 Column(
                     Modifier.fillMaxWidth().heightIn(min = 330.dp).padding(22.dp),
-                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                    verticalArrangement = Arrangement.spacedBy(10.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
                 ) {
-                    Surface(color = MaterialTheme.colorScheme.primaryContainer, shape = RoundedCornerShape(50)) {
-                        Text(
-                            "四六级单词",
-                            style = MaterialTheme.typography.labelLarge,
-                            color = MaterialTheme.colorScheme.onPrimaryContainer,
-                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 5.dp)
-                        )
+                    Spacer(Modifier.height(36.dp))
+                    Text(lite.headword, style = MaterialTheme.typography.displayMedium, fontWeight = FontWeight.Bold, textAlign = TextAlign.Center)
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        if (!lite.phonetic.isNullOrBlank()) {
+                            Text("/${lite.phonetic}/", style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                        IconButton(onClick = { speak(lite.headword) }) {
+                            Icon(Icons.Default.VolumeUp, contentDescription = "发音", tint = MaterialTheme.colorScheme.primary)
+                        }
                     }
-                    Spacer(Modifier.height(40.dp))
-                    Text(
-                        word.headword,
-                        style = MaterialTheme.typography.displayMedium,
-                        fontWeight = FontWeight.Bold,
-                        textAlign = TextAlign.Center,
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                    if (!word.phonetic.isNullOrBlank()) {
-                        Text(
-                            word.phonetic,
-                            style = MaterialTheme.typography.bodyLarge,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            textAlign = TextAlign.Center,
-                            modifier = Modifier.fillMaxWidth()
-                        )
-                    }
-                    Spacer(Modifier.height(40.dp))
+                    Spacer(Modifier.height(24.dp))
                     HorizontalDivider()
                     Spacer(Modifier.height(6.dp))
-                    // 意思先藏起来，点过「认识 / 不认识」才显示
                     if (study.showMeaning) {
-                        Text(word.meaning, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
+                        Text(lite.meaning.replace("；", "\n"), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold, textAlign = TextAlign.Center)
+                        val forms = full?.forms.orEmpty().filter { it.first != "原形" }
+                        if (forms.isNotEmpty()) {
+                            Text(forms.joinToString(" · ") { it.second }.let { it }, style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant, textAlign = TextAlign.Center)
+                        }
+                        Text("点卡片看详情", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     } else {
                         Text(
-                            "先想一想，点「认识」或「不认识」后显示意思",
+                            "先想一想它的意思\n点「认识」或「不认识」后显示",
                             style = MaterialTheme.typography.bodyLarge,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             textAlign = TextAlign.Center,
-                            modifier = Modifier.fillMaxWidth().padding(vertical = 18.dp)
+                            modifier = Modifier.padding(vertical = 18.dp)
                         )
                     }
-                    Spacer(Modifier.height(20.dp))
-                    Text(
-                        "来自 四六级词包",
-                        style = MaterialTheme.typography.labelMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.fillMaxWidth(),
-                        textAlign = TextAlign.Center
-                    )
                 }
             }
             Spacer(Modifier.weight(1f))
-            // 没作答：不认识（描边）/ 认识（实心）；作答后显示意思，按钮换成「下一个」
-            if (LocalBackdrop.current != null) {
-                if (!study.showMeaning) {
-                    Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                        GlassButton(
-                            onClick = {
-                                study.unknown += 1
-                                study.showMeaning = true
-                                saveProgress()
-                                scope.launch {
-                                    withContext(Dispatchers.IO) {
-                                        if (unknownDao.countByHeadword(word.headword) == 0) {
-                                            unknownDao.insert(UnknownWord(headword = word.headword, phonetic = word.phonetic, meaning = word.meaning))
-                                        }
-                                    }
-                                }
-                            },
-                            modifier = Modifier.weight(1f).height(54.dp)
-                        ) { Text("不认识", fontWeight = FontWeight.SemiBold, color = warnColor) }
-                        GlassButton(
-                            onClick = {
-                                study.known += 1
-                                study.showMeaning = true
-                                saveProgress()
-                            },
-                            tint = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier.weight(1f).height(54.dp)
-                        ) { Text("认识", fontWeight = FontWeight.SemiBold, color = Color.White) }
+            val glassUi = LocalBackdrop.current != null
+            if (!study.showMeaning) {
+                Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    if (glassUi) {
+                        GlassButton(onClick = { answer(false) }, modifier = Modifier.weight(1f).height(54.dp)) {
+                            Text("不认识", fontWeight = FontWeight.SemiBold, color = warnColor)
+                        }
+                        GlassButton(onClick = { answer(true) }, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.weight(1f).height(54.dp)) {
+                            Text("认识", fontWeight = FontWeight.SemiBold, color = Color.White)
+                        }
+                    } else {
+                        OutlinedButton(
+                            onClick = { answer(false) },
+                            modifier = Modifier.weight(1f).height(54.dp),
+                            shape = RoundedCornerShape(50),
+                            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
+                            colors = ButtonDefaults.outlinedButtonColors(contentColor = warnColor)
+                        ) { Text("不认识", fontWeight = FontWeight.SemiBold) }
+                        Button(
+                            onClick = { answer(true) },
+                            modifier = Modifier.weight(1f).height(54.dp),
+                            shape = RoundedCornerShape(50),
+                            colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
+                        ) { Text("认识", fontWeight = FontWeight.SemiBold) }
+                    }
+                }
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    if (study.mode == StudyMode.UNKNOWN) "连续认识 ${WordStudy.UNKNOWN_GRADUATE} 次就移出生词本" else WordStudy.nextHint(progress),
+                    style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    textAlign = TextAlign.Center, modifier = Modifier.fillMaxWidth()
+                )
+            } else {
+                val last = if (isReview) study.reviewPos + 1 >= study.queue.size && study.mode == StudyMode.UNKNOWN else index + 1 >= total
+                if (glassUi) {
+                    GlassButton(onClick = { next() }, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.fillMaxWidth().height(54.dp)) {
+                        Text(if (last) "完成" else "下一个", fontWeight = FontWeight.SemiBold, color = Color.White)
                     }
                 } else {
-                    GlassButton(
-                        onClick = { nextWord() },
-                        tint = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier.fillMaxWidth().height(54.dp)
-                    ) { Text(if (index + 1 >= total) "完成" else "下一个", fontWeight = FontWeight.SemiBold, color = Color.White) }
-                }
-            } else if (!study.showMeaning) {
-                Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                    OutlinedButton(
-                        onClick = {
-                            study.unknown += 1
-                            study.showMeaning = true
-                            saveProgress()
-                            scope.launch {
-                                withContext(Dispatchers.IO) {
-                                    if (unknownDao.countByHeadword(word.headword) == 0) {
-                                        unknownDao.insert(UnknownWord(headword = word.headword, phonetic = word.phonetic, meaning = word.meaning))
-                                    }
-                                }
-                            }
-                        },
-                        modifier = Modifier.weight(1f).height(54.dp),
-                        shape = RoundedCornerShape(50),
-                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
-                        colors = ButtonDefaults.outlinedButtonColors(contentColor = warnColor)
-                    ) { Text("不认识", fontWeight = FontWeight.SemiBold) }
                     Button(
-                        onClick = {
-                            study.known += 1
-                            study.showMeaning = true
-                            saveProgress()
-                        },
-                        modifier = Modifier.weight(1f).height(54.dp),
+                        onClick = { next() },
+                        modifier = Modifier.fillMaxWidth().height(54.dp),
                         shape = RoundedCornerShape(50),
                         colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
-                    ) { Text("认识", fontWeight = FontWeight.SemiBold) }
+                    ) { Text(if (last) "完成" else "下一个", fontWeight = FontWeight.SemiBold) }
                 }
-            } else {
-                Button(
-                    onClick = { nextWord() },
-                    modifier = Modifier.fillMaxWidth().height(54.dp),
-                    shape = RoundedCornerShape(50),
-                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
-                ) { Text(if (index + 1 >= total) "完成" else "下一个", fontWeight = FontWeight.SemiBold) }
             }
             Spacer(Modifier.height(20.dp))
         }
-        return
-    }
-
-    if (showUnknownPage) {
-        BackHandler { showUnknownPage = false }
-        LazyColumn(modifier.fillMaxSize().padding(horizontal = 20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            item {
-                Spacer(Modifier.height(4.dp))
-                TextButton(
-                    onClick = { showUnknownPage = false },
-                    contentPadding = androidx.compose.foundation.layout.PaddingValues(0.dp)
-                ) { Text("‹ 返回", color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.SemiBold) }
-                Text("不记得的单词", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
-                Text("共 ${unknownWords.size} 个，记住了就点「已记住」", color = MaterialTheme.colorScheme.onSurfaceVariant)
-            }
-            if (unknownWords.isEmpty()) {
-                item { EmptyCard("还没有不记得的单词", "学习时点「不认识」的词会进这里，自己复习") }
-            } else {
-                items(unknownWords, key = { "unknown-${it.id}" }) { word ->
-                    var expanded by remember { mutableStateOf(false) }
-                    GlassCard(color = MaterialTheme.colorScheme.surface, shape = RoundedCornerShape(18.dp)) {
-                        Column(Modifier.fillMaxWidth().padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Text(word.headword, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
-                                TextButton(onClick = { expanded = !expanded }) { Text(if (expanded) "收起" else "看意思") }
-                                TextButton(onClick = {
-                                    scope.launch { withContext(Dispatchers.IO) { unknownDao.deleteByHeadword(word.headword) } }
-                                }) { Text("已记住") }
-                            }
-                            if (!word.phonetic.isNullOrBlank()) Text(word.phonetic, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                            if (expanded) Text(word.meaning)
-                        }
-                    }
-                }
-            }
-            item { Spacer(Modifier.height(88.dp)) }
+        detailWord?.let { w ->
+            WordDetailDialog(w, wordMap[w.headword], unknownWords.firstOrNull { it.headword == w.headword }, progressDao, unknownDao, onSpeak = { speak(it) }, onDismiss = { detailWord = null })
         }
         return
     }
@@ -2235,51 +2282,97 @@ private fun WordsScreen(
             Text("一词一卡，认识就下一个", color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
         item {
+            // 词书卡：书名 / 进度 / 继续学习 · 换词书 · 从头开始
             GlassCard(color = MaterialTheme.colorScheme.primaryContainer, shape = RoundedCornerShape(24.dp)) {
                 Column(Modifier.fillMaxWidth().padding(20.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text(packMeta?.name ?: "内置词包", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onPrimaryContainer)
+                    val onC = MaterialTheme.colorScheme.onPrimaryContainer
+                    Text(book.fullName + "（ECDICT）", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, color = onC)
                     Text(
-                        if (!packReady) "词包加载中…"
-                        else if (total == 0) "内置词包还没准备好"
-                        else if (study.inStudy) "正在学第 ${study.index + 1} 个"
+                        if (!packReady) "词书加载中…"
+                        else if (total == 0) "词书还没准备好"
                         else if (study.index > 0) "上次学到第 ${study.index + 1} 个 / 共 $total 个"
-                        else "四六级全部单词 · $total 个 · 离线可用",
-                        color = MaterialTheme.colorScheme.onPrimaryContainer
+                        else "共 $total 个词 · 离线可用",
+                        color = onC
                     )
-                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
+                    LinearProgressIndicator(
+                        progress = { if (total == 0) 0f else study.index.toFloat() / total },
+                        modifier = Modifier.fillMaxWidth().height(6.dp).clip(RoundedCornerShape(50)),
+                        color = MaterialTheme.colorScheme.primary,
+                        trackColor = onC.copy(alpha = .15f),
+                        drawStopIndicator = {}
+                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
                         Button(
                             onClick = { startSession(resume = true) },
-                            colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
+                            colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary),
+                            contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 16.dp)
                         ) {
                             Icon(Icons.Default.PlayArrow, contentDescription = null)
-                            Spacer(Modifier.width(6.dp))
-                            Text(if (study.inStudy || study.index > 0) "继续学习" else "开始学习")
+                            Spacer(Modifier.width(4.dp))
+                            Text(if (study.index > 0) "继续学习" else "开始学习")
                         }
+                        OutlinedButton(
+                            onClick = { showBookPicker = true },
+                            border = BorderStroke(1.dp, onC.copy(alpha = .4f)),
+                            colors = ButtonDefaults.outlinedButtonColors(contentColor = onC),
+                            contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 14.dp)
+                        ) { Text("换词书") }
                         if (study.index > 0) {
-                            TextButton(onClick = { startSession(resume = false) }) { Text("从头开始", color = MaterialTheme.colorScheme.primary) }
+                            TextButton(onClick = { startSession(resume = false) }) { Text("从头开始", color = onC) }
                         }
                     }
                 }
             }
         }
         item {
-            // 入口卡：点进去才看到全部不记得的单词
-            GlassCard(
-                onClick = { showUnknownPage = true },
-                color = MaterialTheme.colorScheme.surface,
-                shape = RoundedCornerShape(18.dp)
-            ) {
-                Row(Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 16.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Column(Modifier.weight(1f)) {
-                        Text("不记得的单词", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-                        Text(
-                            if (unknownWords.isEmpty()) "背词时点「不认识」的会放这里" else "${unknownWords.size} 个，点进去复习",
-                            style = MaterialTheme.typography.labelMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
+            // 今日统计：今日新学 / 复习 / 待复习 / 学习天数
+            GlassCard(color = MaterialTheme.colorScheme.surface, shape = RoundedCornerShape(20.dp)) {
+                Column(Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                        StatColumn("今日新学", "${today?.newCount ?: 0}")
+                        StatColumn("复习", "${today?.reviewCount ?: 0}")
+                        StatColumn("待复习", "$dueCount", highlight = dueCount > 0)
+                        StatColumn("学习天数", "$studyDays 天")
                     }
-                    Text("${unknownWords.size}", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.secondary)
-                    Icon(Icons.Default.ChevronRight, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text(
+                        "连续 $streak 天 · 已学 $learnedCount 个 · 掌握 $masteredCount 个",
+                        style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+        }
+        item {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("不记得的单词", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                Text(" ${unknownWords.size} 个", style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.weight(1f))
+                if (unknownWords.isNotEmpty()) TextButton(onClick = { startUnknownReview() }) { Text("复习生词本") }
+            }
+        }
+        if (unknownWords.isEmpty()) {
+            item { EmptyCard("生词本是空的", "背词时点「不认识」的词会自动放进来") }
+        } else {
+            items(unknownWords, key = { "unknown-${it.id}" }) { word ->
+                var expanded by remember { mutableStateOf(false) }
+                GlassCard(color = MaterialTheme.colorScheme.surface, shape = RoundedCornerShape(18.dp), onClick = { detailWord = word.lite() }) {
+                    Column(Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 14.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Column(Modifier.weight(1f)) {
+                                Text(word.headword, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                                Text(
+                                    listOfNotNull(word.phonetic?.takeIf { it.isNotBlank() }?.let { "/${PackStore.cleanPhonetic(it)}/" }, "认识 ${word.knownCount}/${WordStudy.UNKNOWN_GRADUATE}").joinToString(" · "),
+                                    style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                            Surface(
+                                color = MaterialTheme.colorScheme.primary.copy(alpha = .14f),
+                                shape = RoundedCornerShape(50),
+                                modifier = Modifier.clip(RoundedCornerShape(50)).clickable { expanded = !expanded }
+                            ) {
+                                Text(if (expanded) "收起" else "看意思", color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelLarge, modifier = Modifier.padding(horizontal = 14.dp, vertical = 7.dp))
+                            }
+                        }
+                        if (expanded) Text(word.meaning.replace("；", "\n"))
+                    }
                 }
             }
         }
@@ -2288,7 +2381,7 @@ private fun WordsScreen(
                 Text("我的卡片", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
                 IconButton(onClick = { showAddCard = true }) { Icon(Icons.Default.Add, contentDescription = "添加卡片") }
             }
-            Text("自己加的词，不走词包", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text("自己加的词，不走词书", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
         if (cards.isEmpty()) {
             item { EmptyCard("还没有卡片", "点上面 + 添加第一张卡片") }
@@ -2296,6 +2389,7 @@ private fun WordsScreen(
             items(cards, key = { "card-${it.id}" }) { card ->
                 GlassCard(color = MaterialTheme.colorScheme.surface, shape = RoundedCornerShape(18.dp)) {
                     ListItem(
+                        colors = ListItemDefaults.colors(containerColor = Color.Transparent),
                         trailingContent = {
                             IconButton(onClick = { cardToDelete = card }) {
                                 Icon(Icons.Default.Delete, contentDescription = "删除这张卡片", tint = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -2311,6 +2405,42 @@ private fun WordsScreen(
         item { Spacer(Modifier.height(88.dp)) }
     }
 
+    if (showBookPicker) {
+        AlertDialog(
+            onDismissRequest = { showBookPicker = false },
+            title = { Text("换词书") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("每本书各记各的进度；复习和生词本不分书，换书不丢。", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    PackStore.BOOKS.forEach { b ->
+                        val sel = b.id == bookId
+                        val idx = SettingsStore.getBookIndex(context, b.id)
+                        Surface(
+                            color = if (sel) MaterialTheme.colorScheme.primary.copy(alpha = .14f) else MaterialTheme.colorScheme.surfaceVariant,
+                            shape = RoundedCornerShape(14.dp),
+                            border = if (sel) BorderStroke(1.dp, MaterialTheme.colorScheme.primary) else null,
+                            modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp)).clickable {
+                                showBookPicker = false
+                                if (!sel) onChangeBook(b.id)
+                            }
+                        ) {
+                            Row(Modifier.padding(horizontal = 14.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+                                Text(b.shortName, fontWeight = FontWeight.Bold, modifier = Modifier.width(64.dp))
+                                Text("%,d 词".format(b.count) + if (idx > 0) " · 学到 ${idx + 1}" else "", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.weight(1f))
+                                if (sel) Text("在学", color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelLarge)
+                            }
+                        }
+                    }
+                    Text("专四、专八暂时没有可用的开源词表。", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            },
+            confirmButton = {},
+            dismissButton = { TextButton(onClick = { showBookPicker = false }) { Text("关闭") } }
+        )
+    }
+    detailWord?.let { w ->
+        WordDetailDialog(w, wordMap[w.headword], unknownWords.firstOrNull { it.headword == w.headword }, progressDao, unknownDao, onSpeak = { speak(it) }, onDismiss = { detailWord = null })
+    }
     cardToDelete?.let { target ->
         AlertDialog(
             onDismissRequest = { cardToDelete = null },
@@ -2334,6 +2464,100 @@ private fun WordsScreen(
             }
         }
     }
+}
+
+@Composable
+private fun StatColumn(label: String, value: String, highlight: Boolean = false) {
+    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        Text(label, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Text(value, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold, color = if (highlight) MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.onSurface)
+    }
+}
+
+/** 词详情：音标 + 发音、考试标签、释义、词形变化、我的记录；可加入 / 移出生词本。 */
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun WordDetailDialog(
+    word: PackWordLite,
+    full: PackWord?,
+    unknown: UnknownWord?,
+    progressDao: WordProgressDao,
+    unknownDao: UnknownWordDao,
+    onSpeak: (String) -> Unit,
+    onDismiss: () -> Unit
+) {
+    val scope = rememberCoroutineScope()
+    var progress by remember(word.headword) { mutableStateOf<WordProgress?>(null) }
+    LaunchedEffect(word.headword) { progress = withContext(Dispatchers.IO) { progressDao.get(word.headword) } }
+    val dateFmt = remember { SimpleDateFormat("M 月 d 日", Locale.CHINA) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Column {
+                Text(word.headword, style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    if (!word.phonetic.isNullOrBlank()) Text("/${PackStore.cleanPhonetic(word.phonetic)}/", style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    TextButton(onClick = { onSpeak(word.headword) }) {
+                        Icon(Icons.Default.VolumeUp, contentDescription = null)
+                        Spacer(Modifier.width(4.dp)); Text("发音")
+                    }
+                }
+            }
+        },
+        text = {
+            Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                val tags = full?.tags.orEmpty().mapNotNull { PackStore.tagLabel(it) }
+                if (tags.isNotEmpty()) {
+                    FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        tags.forEach { t ->
+                            Surface(color = MaterialTheme.colorScheme.surfaceVariant, shape = RoundedCornerShape(50)) {
+                                Text(t, style = MaterialTheme.typography.labelMedium, modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp))
+                            }
+                        }
+                    }
+                }
+                Text("释义", fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
+                Text(word.meaning.replace("；", "\n").ifBlank { "（词书里没有释义）" })
+                val forms = full?.forms.orEmpty()
+                if (forms.isNotEmpty()) {
+                    Text("词形变化", fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
+                    forms.forEach { (k, v) ->
+                        Row { Text(k, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.width(96.dp)); Text(v, fontWeight = FontWeight.Medium) }
+                    }
+                }
+                Text("我的记录", fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
+                val p = progress
+                if (p == null) Text("还没学过", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                else {
+                    Text("第一次学：${dateFmt.format(Date(p.firstSeen))} · 记错 ${p.wrongCount} 次")
+                    Text(
+                        if (p.dueAt <= System.currentTimeMillis()) "现在该复习了" else "下次复习：${dateFmt.format(Date(p.dueAt))}",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    LinearProgressIndicator(
+                        progress = { (p.stage.toFloat() / WordStudy.MASTERED_STAGE).coerceIn(0f, 1f) },
+                        modifier = Modifier.fillMaxWidth().height(6.dp).clip(RoundedCornerShape(50)),
+                        drawStopIndicator = {}
+                    )
+                }
+                Text("例句、词根词缀、真题例句：词书里暂时没有这些数据。", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        },
+        confirmButton = {
+            if (unknown == null) {
+                TextButton(onClick = {
+                    scope.launch { withContext(Dispatchers.IO) { unknownDao.insert(UnknownWord(headword = word.headword, phonetic = word.phonetic, meaning = word.meaning)) } }
+                    onDismiss()
+                }) { Text("加入生词本") }
+            } else {
+                TextButton(onClick = {
+                    scope.launch { withContext(Dispatchers.IO) { unknownDao.deleteByHeadword(word.headword) } }
+                    onDismiss()
+                }) { Text("已记住，移出生词本") }
+            }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("关闭") } }
+    )
 }
 
 /** 总览：顶部两部分——(a) 我记录的事（按月的日历）(b) 收支记录（本月收支，可切月份）。 */
@@ -2543,30 +2767,48 @@ private fun DataScreen(
     var pendingKind by remember { mutableStateOf<String?>(null) }
     val saveAllMedia = rememberGallerySaver()
     var showAiExport by remember { mutableStateOf(false) }
-    fun exportForAi(days: Int?) {
+    var aiWithMedia by remember { mutableStateOf(true) }
+    var aiExporting by remember { mutableStateOf(false) }
+    fun exportForAi(days: Int?, withMedia: Boolean) {
         scope.launch {
+            aiExporting = true
             val result = runCatching {
-                val text = withContext(Dispatchers.IO) { AiExport.build(db.records().all(), nickname, days) }
-                val dir = File(context.cacheDir, "export").apply { mkdirs() }
+                val dir = File(context.cacheDir, "export").apply { deleteRecursively(); mkdirs() }
+                val (text, mediaFiles) = withContext(Dispatchers.IO) {
+                    val all = db.records().all()
+                    val names = if (withMedia) AiExport.exportMedia(AiExport.mediaInRange(all, days), dir) else null
+                    AiExport.build(all, nickname, days, names) to (names?.values?.map { File(dir, it) } ?: emptyList())
+                }
                 val file = File(dir, "知行_生活记录.md")
                 withContext(Dispatchers.IO) { file.writeText(text) }
                 // 不太长就顺手复制，粘贴进任何 AI 对话框都行
-                if (text.length <= 100_000) {
+                val copied = text.length <= 100_000
+                if (copied) {
                     val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
                     cm.setPrimaryClip(ClipData.newPlainText("知行生活记录", text))
                 }
-                val uri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
-                val send = Intent(Intent.ACTION_SEND).apply {
+                val authority = "${context.packageName}.fileprovider"
+                val uris = (listOf(file) + mediaFiles).map { FileProvider.getUriForFile(context, authority, it) }
+                val send = if (uris.size == 1) Intent(Intent.ACTION_SEND).apply {
                     type = "text/plain"
-                    putExtra(Intent.EXTRA_STREAM, uri)
-                    putExtra(Intent.EXTRA_SUBJECT, "我的生活记录（知行导出）")
-                    clipData = ClipData.newRawUri("知行生活记录", uri)
-                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                    putExtra(Intent.EXTRA_STREAM, uris[0])
+                } else Intent(Intent.ACTION_SEND_MULTIPLE).apply {
+                    type = "*/*"
+                    putParcelableArrayListExtra(Intent.EXTRA_STREAM, ArrayList(uris))
                 }
+                send.putExtra(Intent.EXTRA_SUBJECT, "我的生活记录（知行导出）")
+                val clip = ClipData.newRawUri("知行生活记录", uris[0])
+                uris.drop(1).forEach { clip.addItem(ClipData.Item(it)) }
+                send.clipData = clip
+                send.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
                 context.startActivity(Intent.createChooser(send, "发给 AI").addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
-                text.length <= 100_000
+                copied to mediaFiles.size
             }
-            onMessage(result.fold({ copied -> if (copied) "已复制，也可以直接分享给 AI App" else "记录太多没法复制，用分享发文件吧" }, { "导出失败：${it.message ?: "未知错误"}" }))
+            aiExporting = false
+            onMessage(result.fold({ (copied, n) ->
+                val media = if (n > 0) "，连同 $n 张图一起分享" else ""
+                if (copied) "文字已复制$media" else "记录太多没法复制，用分享发文件吧$media"
+            }, { "导出失败：${it.message ?: "未知错误"}" }))
         }
     }
     if (showAiExport) {
@@ -2576,9 +2818,16 @@ private fun DataScreen(
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text("把记录整理成一份文字，开头带给 AI 的说明。发给任意 AI，它读完就能大致了解你。")
-                    Text("只导出文字、账目和背词情况，照片视频只写数量。导出后由你自己决定发给谁。", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth().clickable { aiWithMedia = !aiWithMedia }) {
+                        Column(Modifier.weight(1f)) {
+                            Text("带上照片和视频", fontWeight = FontWeight.SemiBold)
+                            Text("照片压缩后一起发；视频截开头、中间、结尾 3 帧拼成一张图。文字里写明哪条记录对应哪张图。", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                        Switch(checked = aiWithMedia, onCheckedChange = { aiWithMedia = it })
+                    }
+                    Text("有的 AI App 一次只收十几张图，图多就选短一点的范围。导出后由你自己决定发给谁。", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     listOf(7 to "最近 7 天", 30 to "最近 30 天", null to "全部记录").forEach { (d, label) ->
-                        OutlinedButton(onClick = { showAiExport = false; exportForAi(d) }, modifier = Modifier.fillMaxWidth()) { Text(label) }
+                        OutlinedButton(onClick = { showAiExport = false; exportForAi(d, aiWithMedia) }, enabled = !aiExporting, modifier = Modifier.fillMaxWidth()) { Text(label) }
                     }
                 }
             },
@@ -2962,8 +3211,14 @@ private fun rememberUriBitmap(uri: Uri?, maxDim: Int = 512): androidx.compose.ui
 }
 
 /** 背单词的进度：放在 App 顶层 remember，切 Tab 或重进页面不会回到第一个词。 */
-private class StudyProgress(snapshot: StudySnapshot) {
-    var index by mutableStateOf(snapshot.index)
+private enum class StudyMode { BOOK, UNKNOWN }
+
+private class StudyProgress(snapshot: StudySnapshot, bookIndex: Int) {
+    var index by mutableStateOf(bookIndex)
+    /** 本轮要先过的复习词（或生词本），过完再学新词。 */
+    val queue = mutableStateListOf<PackWordLite>()
+    var reviewPos by mutableStateOf(0)
+    var mode by mutableStateOf(StudyMode.BOOK)
     var known by mutableStateOf(snapshot.known)
     var unknown by mutableStateOf(snapshot.unknown)
     var inStudy by mutableStateOf(snapshot.inStudy)

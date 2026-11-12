@@ -13,7 +13,9 @@ object DataTransfer {
         root.put("habits", JSONArray().also { array -> db.habits().all().forEach { array.put(JSONObject().put("title", it.title).put("done_on", it.doneOn)) } })
         root.put("expenses", JSONArray().also { array -> db.expenses().all().forEach { array.put(JSONObject().put("title", it.title).put("amount_cents", it.amountCents).put("spent_on", it.spentOn)) } })
         root.put("records", JSONArray().also { array -> db.records().all().forEach { array.put(JSONObject().put("kind", it.kind).put("text", it.text).put("image_path", it.imagePath).put("amount_cents", it.amountCents).put("category", it.category).put("money_kind", it.moneyKind).put("created_at", it.createdAt)) } })
-        root.put("unknown_words", JSONArray().also { array -> db.unknownWords().all().forEach { array.put(JSONObject().put("headword", it.headword).put("phonetic", it.phonetic).put("meaning", it.meaning).put("added_at", it.addedAt)) } })
+        root.put("unknown_words", JSONArray().also { array -> db.unknownWords().all().forEach { array.put(JSONObject().put("headword", it.headword).put("phonetic", it.phonetic).put("meaning", it.meaning).put("added_at", it.addedAt).put("known_count", it.knownCount)) } })
+        root.put("word_progress", JSONArray().also { array -> db.wordProgress().all().forEach { array.put(JSONObject().put("headword", it.headword).put("phonetic", it.phonetic).put("meaning", it.meaning).put("stage", it.stage).put("due_at", it.dueAt).put("wrong_count", it.wrongCount).put("first_seen", it.firstSeen).put("last_seen", it.lastSeen)) } })
+        root.put("study_days", JSONArray().also { array -> db.studyDays().all().forEach { array.put(JSONObject().put("day", it.day).put("new_count", it.newCount).put("review_count", it.reviewCount)) } })
         context.contentResolver.openOutputStream(uri)?.use { it.write(root.toString(2).toByteArray(Charsets.UTF_8)) } ?: error("无法写入导出文件")
     }
 
@@ -48,8 +50,22 @@ object DataTransfer {
             val item = unknown.getJSONObject(i)
             val headword = item.optString("headword")
             if (headword.isNotBlank() && db.unknownWords().countByHeadword(headword) == 0) {
-                db.unknownWords().insert(UnknownWord(headword = headword, phonetic = item.optString("phonetic").takeIf { it.isNotBlank() }, meaning = item.optString("meaning"), addedAt = item.optLong("added_at", System.currentTimeMillis())))
+                db.unknownWords().insert(UnknownWord(headword = headword, phonetic = item.optString("phonetic").takeIf { it.isNotBlank() }, meaning = item.optString("meaning"), addedAt = item.optLong("added_at", System.currentTimeMillis()), knownCount = item.optInt("known_count", 0)))
             }
+        }
+        val progress = root.optJSONArray("word_progress") ?: JSONArray()
+        for (i in 0 until progress.length()) {
+            val item = progress.getJSONObject(i)
+            val headword = item.optString("headword")
+            if (headword.isNotBlank() && db.wordProgress().get(headword) == null) {
+                db.wordProgress().upsert(WordProgress(headword = headword, phonetic = item.optString("phonetic").takeIf { it.isNotBlank() && it != "null" }, meaning = item.optString("meaning"), stage = item.optInt("stage"), dueAt = item.optLong("due_at"), wrongCount = item.optInt("wrong_count"), firstSeen = item.optLong("first_seen"), lastSeen = item.optLong("last_seen")))
+            }
+        }
+        val days = root.optJSONArray("study_days") ?: JSONArray()
+        for (i in 0 until days.length()) {
+            val item = days.getJSONObject(i)
+            val day = item.optString("day")
+            if (day.isNotBlank() && db.studyDays().get(day) == null) db.studyDays().upsert(StudyDay(day, item.optInt("new_count"), item.optInt("review_count")))
         }
     }
 }

@@ -123,6 +123,19 @@ object SettingsStore {
         prefs(context).edit().putString(KEY_AVATAR, path).apply()
     }
 
+    /** 当前在学的词书 id（默认四六级）。 */
+    fun getBookId(context: Context): String = prefs(context).getString("word_book", null) ?: PackStore.DEFAULT_BOOK
+    fun setBookId(context: Context, id: String) { prefs(context).edit().putString("word_book", id).apply() }
+
+    /** 每本词书各自记「学到第几个」；老版本只有四六级一本，进度沿用。 */
+    fun getBookIndex(context: Context, id: String): Int {
+        val p = prefs(context)
+        val key = "book_index_$id"
+        if (p.contains(key)) return p.getInt(key, 0)
+        return if (id == PackStore.DEFAULT_BOOK) p.getInt(KEY_STUDY_INDEX, 0) else 0
+    }
+    fun setBookIndex(context: Context, id: String, index: Int) { prefs(context).edit().putInt("book_index_$id", index).apply() }
+
     /** 背单词的进度：上次学到第几个、认识几个、不认识几个；关掉 App 再进来不再从头开始。 */
     fun getStudyProgress(context: Context): StudySnapshot {
         val p = prefs(context)
