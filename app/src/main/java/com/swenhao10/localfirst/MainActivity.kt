@@ -672,18 +672,11 @@ private fun LocalFirstApp(db: AppDatabase) {
         }
     }
     // 词书：用到哪本就从 assets 复制哪本到本机，再只读加载，离线可用；换书时重新加载
-    var skipLower by remember { mutableStateOf(SettingsStore.isSkipLower(context)) }
-    LaunchedEffect(bookId, skipLower) {
+    LaunchedEffect(bookId) {
         packReady = false
         withContext(Dispatchers.IO) {
             packMeta = PackStore.loadMeta(context, bookId)
-            val all = PackStore.loadWords(context, bookId)
-            // 高考词书和中考重合很多：默认去掉中考词，只学高考新增的
-            val lower = PackStore.LOWER[bookId]
-            packWords = if (skipLower && lower != null) {
-                val drop = PackStore.loadHeadwords(context, lower)
-                all.filter { it.headword !in drop }
-            } else all
+            packWords = PackStore.loadWords(context, bookId)
         }
         packReady = true
     }
@@ -764,13 +757,6 @@ private fun LocalFirstApp(db: AppDatabase) {
                             study.index = SettingsStore.getBookIndex(context, id)
                             bookId = id
                             message = "已换成「${PackStore.book(id).shortName}」"
-                        },
-                        skipLower = skipLower,
-                        onSkipLower = { on ->
-                            SettingsStore.setSkipLower(context, on)
-                            skipLower = on
-                            study.index = 0
-                            SettingsStore.setBookIndex(context, bookId, 0)
                         },
                         unknownWords = unknownWords,
                         cards = cards,
@@ -2009,8 +1995,6 @@ private fun WordsScreen(
     packReady: Boolean,
     bookId: String,
     onChangeBook: (String) -> Unit,
-    skipLower: Boolean,
-    onSkipLower: (Boolean) -> Unit,
     unknownWords: List<UnknownWord>,
     cards: List<VocabularyCard>,
     db: AppDatabase,
@@ -2077,24 +2061,16 @@ private fun WordsScreen(
         saveProgress()
     }
 
-    /** 学新词时跳过别的词书里已经学过的词（复习会按遗忘曲线再出现）。 */
-    fun skipLearned() {
-        while (study.index < total - 1 && packWords[study.index].headword in study.learned) study.index += 1
-    }
-
     /** 开始背词：先过到期的复习词（记错多的优先），再接着学新词。 */
     fun startSession(resume: Boolean = true) {
         if (total == 0) { onMessage("词书还没准备好"); return }
         scope.launch {
             val due = withContext(Dispatchers.IO) { progressDao.due(System.currentTimeMillis(), 200) }
-            val learned = withContext(Dispatchers.IO) { progressDao.all().map { it.headword } }
-            study.learned.clear(); study.learned.addAll(learned)
             study.queue.clear(); study.queue.addAll(due.map { it.lite() })
             study.reviewPos = 0
             study.mode = StudyMode.BOOK
             study.index = study.index.coerceIn(0, total - 1)
             if (!resume) { study.index = 0; study.known = 0; study.unknown = 0 }
-            else skipLearned()
             study.inStudy = true
             study.showMeaning = false
             saveProgress()
@@ -2159,12 +2135,7 @@ private fun WordsScreen(
                 study.reviewPos += 1
                 if (study.mode == StudyMode.UNKNOWN && study.reviewPos >= study.queue.size) finishSession()
             } else if (study.index + 1 >= total) finishSession()
-            else {
-                study.learned.add(lite.headword)
-                study.index += 1
-                if (study.mode == StudyMode.BOOK && study.index < total - 1 && packWords[study.index].headword in study.learned) skipLearned()
-                saveProgress()
-            }
+            else { study.index += 1; saveProgress() }
         }
 
         val label = when {
@@ -2460,14 +2431,6 @@ private fun WordsScreen(
                             }
                         }
                     }
-                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth().clickable { onSkipLower(!skipLower) }) {
-                        Column(Modifier.weight(1f)) {
-                            Text("高考跳过中考词", fontWeight = FontWeight.SemiBold)
-                            Text("两本重合 1,554 个；打开后高考只学新增的 2,123 个", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        }
-                        Switch(checked = skipLower, onCheckedChange = { onSkipLower(it) })
-                    }
-                    Text("任何词书里学过的词，换书后不会再当新词出现。", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     Text("专四、专八暂时没有可用的开源词表。", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             },
@@ -3253,8 +3216,6 @@ private class StudyProgress(snapshot: StudySnapshot, bookIndex: Int) {
     val queue = mutableStateListOf<PackWordLite>()
     var reviewPos by mutableStateOf(0)
     var mode by mutableStateOf(StudyMode.BOOK)
-    /** 已经学过的词（任何词书），学新词时跳过。 */
-    val learned = HashSet<String>()
     var known by mutableStateOf(snapshot.known)
     var unknown by mutableStateOf(snapshot.unknown)
     var inStudy by mutableStateOf(snapshot.inStudy)

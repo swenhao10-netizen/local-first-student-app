@@ -127,10 +127,6 @@ object SettingsStore {
     fun getBookId(context: Context): String = prefs(context).getString("word_book", null) ?: PackStore.DEFAULT_BOOK
     fun setBookId(context: Context, id: String) { prefs(context).edit().putString("word_book", id).apply() }
 
-    /** 高考词书是否跳过中考词（两本重合 1554 个，默认跳过）。 */
-    fun isSkipLower(context: Context): Boolean = prefs(context).getBoolean("skip_lower_book", true)
-    fun setSkipLower(context: Context, on: Boolean) { prefs(context).edit().putBoolean("skip_lower_book", on).apply() }
-
     /** 每本词书各自记「学到第几个」；老版本只有四六级一本，进度沿用。 */
     fun getBookIndex(context: Context, id: String): Int {
         val p = prefs(context)
