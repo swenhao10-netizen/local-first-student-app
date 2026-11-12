@@ -209,6 +209,13 @@ import androidx.activity.result.PickVisualMediaRequest
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.Videocam
+import androidx.compose.animation.core.Animatable
+import androidx.compose.foundation.gestures.Orientation
+import androidx.compose.foundation.gestures.draggable
+import androidx.compose.foundation.gestures.rememberDraggableState
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.unit.IntOffset
+import kotlin.math.roundToInt
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -261,6 +268,45 @@ private fun TipPill(text: String) {
                 maxLines = 2
             )
         }
+    }
+}
+
+/** 向右滑动移除：滑过三分之一松手就删，不够就弹回。 */
+@Composable
+private fun SwipeToRemove(onRemove: () -> Unit, content: @Composable () -> Unit) {
+    val scope = rememberCoroutineScope()
+    val offset = remember { Animatable(0f) }
+    var widthPx by remember { mutableStateOf(1f) }
+    val threshold = widthPx * 0.33f
+    val progress = (offset.value / threshold).coerceIn(0f, 1f)
+    val red = MaterialTheme.colorScheme.error
+    Box(Modifier.fillMaxWidth().onSizeChanged { widthPx = it.width.toFloat().coerceAtLeast(1f) }) {
+        if (offset.value > 0f) {
+            Box(
+                Modifier.matchParentSize().clip(RoundedCornerShape(18.dp)).background(red.copy(alpha = 0.25f + 0.6f * progress)).padding(start = 22.dp),
+                contentAlignment = Alignment.CenterStart
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Default.Delete, null, tint = Color.White)
+                    Spacer(Modifier.width(8.dp))
+                    Text(if (progress >= 1f) "松手移出" else "移出生词本", color = Color.White, fontWeight = FontWeight.SemiBold)
+                }
+            }
+        }
+        Box(
+            Modifier
+                .offset { IntOffset(offset.value.roundToInt(), 0) }
+                .draggable(
+                    orientation = Orientation.Horizontal,
+                    state = rememberDraggableState { d -> scope.launch { offset.snapTo((offset.value + d).coerceIn(0f, widthPx)) } },
+                    onDragStopped = {
+                        if (offset.value >= threshold) {
+                            offset.animateTo(widthPx)
+                            onRemove()
+                        } else offset.animateTo(0f)
+                    }
+                )
+        ) { content() }
     }
 }
 
@@ -2335,6 +2381,10 @@ private fun WordsScreen(
         } else {
             items(unknownWords, key = { "unknown-${it.id}" }) { word ->
                 var expanded by remember { mutableStateOf(false) }
+                SwipeToRemove(onRemove = {
+                    scope.launch { withContext(Dispatchers.IO) { unknownDao.deleteByHeadword(word.headword) } }
+                    onMessage("已把 ${word.headword} 移出生词本")
+                }) {
                 GlassCard(color = MaterialTheme.colorScheme.surface, shape = RoundedCornerShape(18.dp), onClick = { detailWord = word.lite() }) {
                     Column(Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 14.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -2355,6 +2405,7 @@ private fun WordsScreen(
                         }
                         if (expanded) Text(word.meaning.replace("；", "\n"))
                     }
+                }
                 }
             }
         }
@@ -2377,7 +2428,7 @@ private fun WordsScreen(
             GlassCard(color = MaterialTheme.colorScheme.primaryContainer, shape = RoundedCornerShape(24.dp)) {
                 Column(Modifier.fillMaxWidth().padding(20.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     val onC = MaterialTheme.colorScheme.onPrimaryContainer
-                    Text(book.fullName + "（ECDICT）", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, color = onC)
+                    Text(book.fullName + if (book.id == "dev") "" else "（ECDICT）", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, color = onC)
                     Text(
                         if (!packReady) "词书加载中…"
                         else if (total == 0) "词书还没准备好"
