@@ -111,7 +111,8 @@ object AutoBook {
                 .setContentText(body)
                 .setStyle(Notification.BigTextStyle().bigText(body))
                 .setOngoing(true)
-                .setRequestPromotedOngoing(true)
+                // 请求「实时活动」提升（等同 setRequestPromotedOngoing，用 extra 写，老一点的 SDK 也能编译）
+                .addExtras(android.os.Bundle().apply { putBoolean("android.requestPromotedOngoing", true) })
                 .setShortCriticalText(amount)
                 .setCategory(Notification.CATEGORY_STATUS)
                 .setTimeoutAfter(10 * 60_000L)
