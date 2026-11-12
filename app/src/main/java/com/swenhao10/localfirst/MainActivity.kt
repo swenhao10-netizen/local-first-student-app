@@ -672,11 +672,18 @@ private fun LocalFirstApp(db: AppDatabase) {
         }
     }
     // 词书：用到哪本就从 assets 复制哪本到本机，再只读加载，离线可用；换书时重新加载
-    LaunchedEffect(bookId) {
+    var skipLower by remember { mutableStateOf(SettingsStore.isSkipLower(context)) }
+    LaunchedEffect(bookId, skipLower) {
         packReady = false
         withContext(Dispatchers.IO) {
             packMeta = PackStore.loadMeta(context, bookId)
-            packWords = PackStore.loadWords(context, bookId)
+            val all = PackStore.loadWords(context, bookId)
+            // 高考词书和中考重合很多：默认去掉中考词，只学高考新增的
+            val lower = PackStore.LOWER[bookId]
+            packWords = if (skipLower && lower != null) {
+                val drop = PackStore.loadHeadwords(context, lower)
+                all.filter { it.headword !in drop }
+            } else all
         }
         packReady = true
     }
@@ -757,6 +764,13 @@ private fun LocalFirstApp(db: AppDatabase) {
                             study.index = SettingsStore.getBookIndex(context, id)
                             bookId = id
                             message = "已换成「${PackStore.book(id).shortName}」"
+                        },
+                        skipLower = skipLower,
+                        onSkipLower = { on ->
+                            SettingsStore.setSkipLower(context, on)
+                            skipLower = on
+                            study.index = 0
+                            SettingsStore.setBookIndex(context, bookId, 0)
                         },
                         unknownWords = unknownWords,
                         cards = cards,
@@ -1995,6 +2009,8 @@ private fun WordsScreen(
     packReady: Boolean,
     bookId: String,
     onChangeBook: (String) -> Unit,
+    skipLower: Boolean,
+    onSkipLower: (Boolean) -> Unit,
     unknownWords: List<UnknownWord>,
     cards: List<VocabularyCard>,
     db: AppDatabase,
@@ -2061,16 +2077,24 @@ private fun WordsScreen(
         saveProgress()
     }
 
+    /** 学新词时跳过别的词书里已经学过的词（复习会按遗忘曲线再出现）。 */
+    fun skipLearned() {
+        while (study.index < total - 1 && packWords[study.index].headword in study.learned) study.index += 1
+    }
+
     /** 开始背词：先过到期的复习词（记错多的优先），再接着学新词。 */
     fun startSession(resume: Boolean = true) {
         if (total == 0) { onMessage("词书还没准备好"); return }
         scope.launch {
             val due = withContext(Dispatchers.IO) { progressDao.due(System.currentTimeMillis(), 200) }
+            val learned = withContext(Dispatchers.IO) { progressDao.all().map { it.headword } }
+            study.learned.clear(); study.learned.addAll(learned)
             study.queue.clear(); study.queue.addAll(due.map { it.lite() })
             study.reviewPos = 0
             study.mode = StudyMode.BOOK
             study.index = study.index.coerceIn(0, total - 1)
             if (!resume) { study.index = 0; study.known = 0; study.unknown = 0 }
+            else skipLearned()
             study.inStudy = true
             study.showMeaning = false
             saveProgress()
@@ -2135,7 +2159,12 @@ private fun WordsScreen(
                 study.reviewPos += 1
                 if (study.mode == StudyMode.UNKNOWN && study.reviewPos >= study.queue.size) finishSession()
             } else if (study.index + 1 >= total) finishSession()
-            else { study.index += 1; saveProgress() }
+            else {
+                study.learned.add(lite.headword)
+                study.index += 1
+                if (study.mode == StudyMode.BOOK && study.index < total - 1 && packWords[study.index].headword in study.learned) skipLearned()
+                saveProgress()
+            }
         }
 
         val label = when {
@@ -2431,6 +2460,14 @@ private fun WordsScreen(
                             }
                         }
                     }
+                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth().clickable { onSkipLower(!skipLower) }) {
+                        Column(Modifier.weight(1f)) {
+                            Text("高考跳过中考词", fontWeight = FontWeight.SemiBold)
+                            Text("两本重合 1,554 个；打开后高考只学新增的 2,123 个", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                        Switch(checked = skipLower, onCheckedChange = { onSkipLower(it) })
+                    }
+                    Text("任何词书里学过的词，换书后不会再当新词出现。", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     Text("专四、专八暂时没有可用的开源词表。", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             },
@@ -2773,42 +2810,39 @@ private fun DataScreen(
         scope.launch {
             aiExporting = true
             val result = runCatching {
-                val dir = File(context.cacheDir, "export").apply { deleteRecursively(); mkdirs() }
-                val (text, mediaFiles) = withContext(Dispatchers.IO) {
+                val root = File(context.cacheDir, "export").apply { deleteRecursively(); mkdirs() }
+                val stamp = SimpleDateFormat("yyyyMMdd_HHmm", Locale.CHINA).format(Date())
+                val dir = File(root, "知行导出_$stamp").apply { mkdirs() }
+                val text = withContext(Dispatchers.IO) {
                     val all = db.records().all()
                     val names = if (withMedia) AiExport.exportMedia(AiExport.mediaInRange(all, days), dir) else null
-                    AiExport.build(all, nickname, days, names) to (names?.values?.map { File(dir, it) } ?: emptyList())
+                    AiExport.build(all, nickname, days, names?.takeIf { it.isNotEmpty() })
                 }
-                val file = File(dir, "知行_生活记录.md")
-                withContext(Dispatchers.IO) { file.writeText(text) }
-                // 不太长就顺手复制，粘贴进任何 AI 对话框都行
+                val md = File(dir, "知行_生活记录.md")
+                withContext(Dispatchers.IO) { md.writeText(text) }
+                val hasImages = File(dir, "图片").listFiles()?.isNotEmpty() == true
+                // 有图就打成一个压缩包：文字和图片在一起；没图就只发 md
+                val out = if (hasImages) File(root, "知行导出_$stamp.zip").also { z -> withContext(Dispatchers.IO) { AiExport.zipDir(dir, z) } } else md
+                val mime = if (hasImages) "application/zip" else "text/markdown"
+                val saved = withContext(Dispatchers.IO) { AiExport.saveToDownloads(context, out, mime) }
                 val copied = text.length <= 100_000
                 if (copied) {
                     val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
                     cm.setPrimaryClip(ClipData.newPlainText("知行生活记录", text))
                 }
-                val authority = "${context.packageName}.fileprovider"
-                val uris = (listOf(file) + mediaFiles).map { FileProvider.getUriForFile(context, authority, it) }
-                val send = if (uris.size == 1) Intent(Intent.ACTION_SEND).apply {
-                    type = "text/plain"
-                    putExtra(Intent.EXTRA_STREAM, uris[0])
-                } else Intent(Intent.ACTION_SEND_MULTIPLE).apply {
-                    type = "*/*"
-                    putParcelableArrayListExtra(Intent.EXTRA_STREAM, ArrayList(uris))
+                val uri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", out)
+                val send = Intent(Intent.ACTION_SEND).apply {
+                    type = if (hasImages) "application/zip" else "text/plain"
+                    putExtra(Intent.EXTRA_STREAM, uri)
+                    putExtra(Intent.EXTRA_SUBJECT, "我的生活记录（知行导出）")
+                    clipData = ClipData.newRawUri("知行生活记录", uri)
+                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
                 }
-                send.putExtra(Intent.EXTRA_SUBJECT, "我的生活记录（知行导出）")
-                val clip = ClipData.newRawUri("知行生活记录", uris[0])
-                uris.drop(1).forEach { clip.addItem(ClipData.Item(it)) }
-                send.clipData = clip
-                send.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
                 context.startActivity(Intent.createChooser(send, "发给 AI").addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
-                copied to mediaFiles.size
+                saved
             }
             aiExporting = false
-            onMessage(result.fold({ (copied, n) ->
-                val media = if (n > 0) "，连同 $n 张图一起分享" else ""
-                if (copied) "文字已复制$media" else "记录太多没法复制，用分享发文件吧$media"
-            }, { "导出失败：${it.message ?: "未知错误"}" }))
+            onMessage(result.fold({ saved -> if (saved != null) "已存到 $saved，也可以直接分享" else "已打包，直接分享给 AI 吧" }, { "导出失败：${it.message ?: "未知错误"}" }))
         }
     }
     if (showAiExport) {
@@ -2820,12 +2854,12 @@ private fun DataScreen(
                     Text("把记录整理成一份文字，开头带给 AI 的说明。发给任意 AI，它读完就能大致了解你。")
                     Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth().clickable { aiWithMedia = !aiWithMedia }) {
                         Column(Modifier.weight(1f)) {
-                            Text("带上照片和视频", fontWeight = FontWeight.SemiBold)
-                            Text("照片压缩后一起发；视频截开头、中间、结尾 3 帧拼成一张图。文字里写明哪条记录对应哪张图。", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Text("把照片和视频一起打包", fontWeight = FontWeight.SemiBold)
+                            Text("文字和图片放进一个压缩包，存到「下载/知行」；视频截开头、中间、结尾 3 帧拼成一张图。文字里写明每条记录对应哪张图。", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
                         Switch(checked = aiWithMedia, onCheckedChange = { aiWithMedia = it })
                     }
-                    Text("有的 AI App 一次只收十几张图，图多就选短一点的范围。导出后由你自己决定发给谁。", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text("压缩包发给能读 zip 的 AI；不收 zip 的，解压后把文字和图片一起发。文字同时复制好了，只想发文字直接粘贴。", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     listOf(7 to "最近 7 天", 30 to "最近 30 天", null to "全部记录").forEach { (d, label) ->
                         OutlinedButton(onClick = { showAiExport = false; exportForAi(d, aiWithMedia) }, enabled = !aiExporting, modifier = Modifier.fillMaxWidth()) { Text(label) }
                     }
@@ -3219,6 +3253,8 @@ private class StudyProgress(snapshot: StudySnapshot, bookIndex: Int) {
     val queue = mutableStateListOf<PackWordLite>()
     var reviewPos by mutableStateOf(0)
     var mode by mutableStateOf(StudyMode.BOOK)
+    /** 已经学过的词（任何词书），学新词时跳过。 */
+    val learned = HashSet<String>()
     var known by mutableStateOf(snapshot.known)
     var unknown by mutableStateOf(snapshot.unknown)
     var inStudy by mutableStateOf(snapshot.inStudy)

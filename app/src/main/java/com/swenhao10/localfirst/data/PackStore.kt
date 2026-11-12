@@ -40,6 +40,16 @@ object PackStore {
     )
     const val DEFAULT_BOOK = "cet46"
 
+    /** 低一级的词书：高考跳过中考词时用。 */
+    val LOWER = mapOf("gk" to "zk")
+
+    /** 只读词头，用来去重。 */
+    fun loadHeadwords(context: Context, id: String): Set<String> = try {
+        open(context, id).rawQuery("SELECT headword FROM entry", null).use { c ->
+            val set = HashSet<String>(); while (c.moveToNext()) set.add(c.getString(0)); set
+        }
+    } catch (e: Exception) { emptySet() }
+
     fun book(id: String): WordBook = BOOKS.firstOrNull { it.id == id } ?: BOOKS.first { it.id == DEFAULT_BOOK }
 
     /** ECDICT 的标签 -> 中文考试名。 */

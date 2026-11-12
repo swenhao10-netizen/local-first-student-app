@@ -8,8 +8,8 @@ import java.util.Locale
 /**
  * 「导出给 AI」：把记录整理成一份 Markdown 文字档，开头带一段给 AI 的说明，
  * 用户分享给任意 AI App 或复制粘贴，AI 读完就能大致了解他。
- * 默认只导出文字；选「带上照片和视频」时，图片压缩后一起分享，视频截 3 帧拼成一张图，
- * 文字里每条记录写明对应的文件名，AI 能把图和记录对上。
+ * 默认打成一个压缩包：记录.md + 图片/（照片压缩，视频截 3 帧拼成一张图），
+ * 文字里每条记录写明对应的图片路径，AI 解压后能把图和记录对上。
  */
 object AiExport {
     private val dayFmt = SimpleDateFormat("yyyy-MM-dd", Locale.CHINA)
@@ -66,7 +66,7 @@ object AiExport {
         if (study.isNotEmpty()) sb.appendLine("- 背单词 $studyDays 天，共约 $wordsLearned 个词")
         if (photos + videos > 0) {
             if (mediaNames == null) sb.appendLine("- 附带照片 $photos 张、视频 $videos 段（文件没有导出，只记数量）")
-            else sb.appendLine("- 附带照片 $photos 张、视频 $videos 段，已作为图片一起发给你：照片是原图压缩，视频是从开头、中间、结尾各截一帧拼成的一张图。每条记录后面的［］里写了对应的文件名，请结合图片内容一起理解。")
+            else sb.appendLine("- 附带照片 $photos 张、视频 $videos 段，都在这个压缩包的「图片」文件夹里：照片是原图压缩，视频是从开头、中间、结尾各截一帧拼成的一张图。每条记录后面的［］里写了对应的文件路径，请打开图片结合内容一起理解。")
         }
         val hours = list.filter { it.kind != "study" }.map { Calendar.getInstance().apply { timeInMillis = it.createdAt }.get(Calendar.HOUR_OF_DAY) }
         if (hours.isNotEmpty()) {
@@ -121,6 +121,7 @@ object AiExport {
      */
     fun exportMedia(paths: List<String>, dir: java.io.File): Map<String, String> {
         val out = linkedMapOf<String, String>()
+        val imgDir = java.io.File(dir, "图片").apply { mkdirs() }
         var pi = 0; var vi = 0
         for (path in paths) {
             if (out.containsKey(path)) continue
@@ -128,13 +129,13 @@ object AiExport {
                 if (isVideoPath(path)) {
                     val name = "视频_%03d.jpg".format(++vi)
                     val strip = videoStrip(path) ?: return@runCatching
-                    java.io.FileOutputStream(java.io.File(dir, name)).use { strip.compress(android.graphics.Bitmap.CompressFormat.JPEG, 85, it) }
-                    out[path] = name
+                    java.io.FileOutputStream(java.io.File(imgDir, name)).use { strip.compress(android.graphics.Bitmap.CompressFormat.JPEG, 85, it) }
+                    out[path] = "图片/$name"
                 } else {
                     val bmp = decodeScaled(path, 1600) ?: return@runCatching
                     val name = "照片_%03d.jpg".format(++pi)
-                    java.io.FileOutputStream(java.io.File(dir, name)).use { bmp.compress(android.graphics.Bitmap.CompressFormat.JPEG, 85, it) }
-                    out[path] = name
+                    java.io.FileOutputStream(java.io.File(imgDir, name)).use { bmp.compress(android.graphics.Bitmap.CompressFormat.JPEG, 85, it) }
+                    out[path] = "图片/$name"
                 }
             }
         }
@@ -186,4 +187,33 @@ object AiExport {
             return null
         } finally { runCatching { r.release() } }
     }
+
+    /** 把 dir 里的所有文件打成 zip（保留子文件夹）。 */
+    fun zipDir(dir: java.io.File, zip: java.io.File) {
+        java.util.zip.ZipOutputStream(java.io.BufferedOutputStream(java.io.FileOutputStream(zip))).use { zos ->
+            dir.walkTopDown().filter { it.isFile }.forEach { f ->
+                zos.putNextEntry(java.util.zip.ZipEntry(f.relativeTo(dir).path))
+                f.inputStream().use { it.copyTo(zos) }
+                zos.closeEntry()
+            }
+        }
+    }
+
+    /** 存一份到「下载/知行」，返回给用户看的位置；存不了返回 null。 */
+    fun saveToDownloads(context: android.content.Context, file: java.io.File, mime: String): String? = runCatching {
+        if (android.os.Build.VERSION.SDK_INT >= 29) {
+            val values = android.content.ContentValues().apply {
+                put(android.provider.MediaStore.Downloads.DISPLAY_NAME, file.name)
+                put(android.provider.MediaStore.Downloads.MIME_TYPE, mime)
+                put(android.provider.MediaStore.Downloads.RELATIVE_PATH, android.os.Environment.DIRECTORY_DOWNLOADS + "/知行")
+            }
+            val uri = context.contentResolver.insert(android.provider.MediaStore.Downloads.EXTERNAL_CONTENT_URI, values) ?: return@runCatching null
+            context.contentResolver.openOutputStream(uri)?.use { out -> file.inputStream().use { it.copyTo(out) } } ?: return@runCatching null
+            "下载/知行/${file.name}"
+        } else {
+            val dir = java.io.File(android.os.Environment.getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_DOWNLOADS), "知行").apply { mkdirs() }
+            file.copyTo(java.io.File(dir, file.name), overwrite = true)
+            "下载/知行/${file.name}"
+        }
+    }.getOrNull()
 }
