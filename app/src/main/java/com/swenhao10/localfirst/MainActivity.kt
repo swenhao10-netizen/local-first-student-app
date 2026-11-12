@@ -1367,7 +1367,7 @@ private fun RecordImages(paths: List<String>, modifier: Modifier = Modifier, onI
                 if (video) {
                     PlayBadge()
                     val dur by androidx.compose.runtime.produceState<Long?>(null, path) { value = withContext(Dispatchers.IO) { videoDurationMs(path) } }
-                    if (dur != null) DurationTag(dur, Modifier.align(Alignment.BottomEnd))
+                    dur?.let { DurationTag(it, Modifier.align(Alignment.BottomEnd)) }
                 }
             }
         }
