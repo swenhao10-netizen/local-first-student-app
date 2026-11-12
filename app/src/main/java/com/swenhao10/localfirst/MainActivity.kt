@@ -41,6 +41,7 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.compose.material.icons.filled.ChevronRight
+import androidx.compose.material.icons.filled.CalendarMonth
 import androidx.compose.material.icons.filled.ChevronLeft
 import com.swenhao10.localfirst.ui.LaunchAnimation
 import androidx.compose.foundation.BorderStroke
@@ -243,17 +244,64 @@ class MainActivity : ComponentActivity() {
     override fun onStop() {
         super.onStop()
         com.swenhao10.localfirst.widget.FeltWidgetBase.refreshAll(this)
+        // 离开知行就自动备份一份到「文档/知行」（数据没变就跳过）
+        com.swenhao10.localfirst.data.AutoBackup.schedule(this)
     }
     override fun onCreate(state: Bundle?) {
+        installCrashLog()
         super.onCreate(state)
         val db = AppDatabase.get(this)
+        val crashFile = java.io.File(filesDir, "last_crash.txt")
+        val lastCrash = runCatching { if (crashFile.exists()) crashFile.readText() else null }.getOrNull()
         setContent {
             // 启动动画只在冷启动放一次（转屏等重建不再放），点一下可跳过
             var showSplash by rememberSaveable { mutableStateOf(state == null) }
+            var crashText by remember { mutableStateOf(lastCrash) }
             Box(Modifier.fillMaxSize()) {
                 LocalFirstApp(db)
                 if (showSplash) LaunchAnimation(onFinished = { showSplash = false })
+                if (!showSplash) RestorePrompt(db)
+                crashText?.let { txt ->
+                    // 上次闪退的原因：只存在本机，复制给开发者看
+                    val clip = androidx.compose.ui.platform.LocalClipboardManager.current
+                    androidx.compose.material3.AlertDialog(
+                        onDismissRequest = { },
+                        title = { Text("上次闪退了") },
+                        text = {
+                            Column(Modifier.heightIn(max = 360.dp).verticalScroll(rememberScrollState())) {
+                                Text("点「复制」把下面的内容发给我，我按它修。", style = MaterialTheme.typography.bodySmall)
+                                Spacer(Modifier.height(8.dp))
+                                androidx.compose.foundation.text.selection.SelectionContainer {
+                                    Text(txt, style = MaterialTheme.typography.labelSmall)
+                                }
+                            }
+                        },
+                        confirmButton = {
+                            TextButton(onClick = { clip.setText(androidx.compose.ui.text.AnnotatedString(txt)) }) { Text("复制") }
+                        },
+                        dismissButton = {
+                            TextButton(onClick = { crashFile.delete(); crashText = null }) { Text("关闭") }
+                        }
+                    )
+                }
             }
+        }
+    }
+
+    /** 闪退时把原因写到本机文件，下次打开弹出来，方便复制。 */
+    private fun installCrashLog() {
+        val prev = Thread.getDefaultUncaughtExceptionHandler()
+        val dir = filesDir
+        Thread.setDefaultUncaughtExceptionHandler { t, e ->
+            runCatching {
+                val sw = java.io.StringWriter()
+                e.printStackTrace(java.io.PrintWriter(sw))
+                val head = "知行 ${runCatching { packageManager.getPackageInfo(packageName, 0).versionName }.getOrNull()} · " +
+                    "Android ${android.os.Build.VERSION.RELEASE} · ${android.os.Build.MODEL} · 线程 ${t.name}\n" +
+                    java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss", java.util.Locale.CHINA).format(java.util.Date()) + "\n\n"
+                java.io.File(dir, "last_crash.txt").writeText(head + sw.toString().take(12000))
+            }
+            prev?.uncaughtException(t, e)
         }
     }
 }
@@ -908,7 +956,7 @@ private fun LocalFirstApp(db: AppDatabase) {
                             editingRecord = null
                             showAddRecord = true
                         },
-                        onSearch = { message = "搜索还在做，下个版本见" },
+                        onSearch = { message = "还没有记录" },
                         modifier = Modifier.padding(padding),
                         onEditRecord = { record ->
                             editingRecord = record
@@ -1093,7 +1141,7 @@ private fun iconFor(tab: Tab): ImageVector = when (tab) {
 }
 
 /** 记录（首页）：头像昵称头 + 时间轴，按天分组，最新在前。 */
-@OptIn(ExperimentalFoundationApi::class)
+@OptIn(ExperimentalFoundationApi::class, ExperimentalMaterial3Api::class)
 @Composable
 private fun RecordScreen(
     records: List<RecordEntry>,
@@ -1112,7 +1160,42 @@ private fun RecordScreen(
     var viewer by remember { mutableStateOf<Pair<List<String>, Int>?>(null) }
     val dayCount = remember(records) { records.map { dayKey(it.createdAt) }.distinct().size }
     val avatarBitmap = rememberBitmap(avatarPath, 256)
-    LazyColumn(modifier.fillMaxSize().padding(horizontal = 16.dp)) {
+    // 放大镜 = 跳到某一天：日历里只有记过东西的日子能点
+    val listState = androidx.compose.foundation.lazy.rememberLazyListState()
+    val listScope = rememberCoroutineScope()
+    var showDatePick by remember { mutableStateOf(false) }
+    val recordDays = remember(records) { records.map { dayKey(it.createdAt) }.toSet() }
+    if (showDatePick) {
+        val utcFmt = remember { SimpleDateFormat("yyyy-MM-dd", Locale.CHINA).apply { timeZone = java.util.TimeZone.getTimeZone("UTC") } }
+        val pickState = androidx.compose.material3.rememberDatePickerState(
+            initialSelectedDateMillis = records.firstOrNull()?.let { utcFmt.parse(dayKey(it.createdAt))?.time },
+            selectableDates = object : androidx.compose.material3.SelectableDates {
+                override fun isSelectableDate(utcTimeMillis: Long) = utcFmt.format(Date(utcTimeMillis)) in recordDays
+            }
+        )
+        androidx.compose.material3.DatePickerDialog(
+            onDismissRequest = { showDatePick = false },
+            confirmButton = {
+                TextButton(onClick = {
+                    showDatePick = false
+                    val picked = pickState.selectedDateMillis?.let { utcFmt.format(Date(it)) } ?: return@TextButton
+                    // 算出那一天的标题在列表里是第几项：header 占 1，之后每天 = 1 个标题 + 当天条数
+                    var idx = 1
+                    var target = -1
+                    for ((key, list) in records.groupBy { dayKey(it.createdAt) }) {
+                        if (key <= picked) { target = idx; break }
+                        idx += 1 + list.size
+                    }
+                    if (target < 0) target = (idx - 1).coerceAtLeast(0)
+                    listScope.launch { listState.animateScrollToItem(target) }
+                }) { Text("跳过去") }
+            },
+            dismissButton = { TextButton(onClick = { showDatePick = false }) { Text("取消") } }
+        ) {
+            androidx.compose.material3.DatePicker(state = pickState, title = { Text("跳到哪一天", modifier = Modifier.padding(start = 24.dp, top = 16.dp)) }, showModeToggle = false)
+        }
+    }
+    LazyColumn(modifier.fillMaxSize().padding(horizontal = 16.dp), state = listState) {
         item(key = "header") {
             Spacer(Modifier.height(6.dp))
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -1140,13 +1223,13 @@ private fun RecordScreen(
                     )
                 }
                 if (LocalBackdrop.current != null) {
-                    GlassButton(onClick = onSearch, modifier = Modifier.size(46.dp)) {
-                        Icon(Icons.Default.Search, contentDescription = "搜索", tint = MaterialTheme.colorScheme.onSurface)
+                    GlassButton(onClick = { if (records.isEmpty()) onSearch() else showDatePick = true }, modifier = Modifier.size(46.dp)) {
+                        Icon(Icons.Default.CalendarMonth, contentDescription = "跳到日期", tint = MaterialTheme.colorScheme.onSurface)
                     }
                 } else IconButton(
-                    onClick = onSearch,
+                    onClick = { if (records.isEmpty()) onSearch() else showDatePick = true },
                     modifier = Modifier.size(42.dp).background(MaterialTheme.colorScheme.surface, CircleShape)
-                ) { Icon(Icons.Default.Search, contentDescription = "搜索", tint = MaterialTheme.colorScheme.onSurface) }
+                ) { Icon(Icons.Default.CalendarMonth, contentDescription = "跳到日期", tint = MaterialTheme.colorScheme.onSurface) }
                 if (!LocalGlass.current) {
                     Spacer(Modifier.width(10.dp))
                     Surface(onClick = onAddRecord, shape = CircleShape, color = MaterialTheme.colorScheme.primary, modifier = Modifier.size(46.dp)) {
@@ -1301,8 +1384,9 @@ private fun RecordImages(paths: List<String>, modifier: Modifier = Modifier, onI
     if (paths.size == 1) {
         val path = paths.first()
         val video = isVideoPath(path)
-        val bitmap = rememberBitmap(path)
-        if (bitmap != null || video) {
+        val bitmap = rememberBitmap(path, 720)
+        val exists = remember(path) { java.io.File(path).exists() }
+        if (exists) {
             Box(
                 modifier = modifier
                     .fillMaxWidth(0.7f)
@@ -1321,8 +1405,8 @@ private fun RecordImages(paths: List<String>, modifier: Modifier = Modifier, onI
                 }
                 if (video) {
                     PlayBadge()
-                    val dur = remember(path) { videoDurationMs(path) }
-                    if (dur != null) DurationTag(dur, Modifier.align(Alignment.BottomEnd))
+                    val dur by androidx.compose.runtime.produceState<Long?>(null, path) { value = withContext(Dispatchers.IO) { videoDurationMs(path) } }
+                    dur?.let { DurationTag(it, Modifier.align(Alignment.BottomEnd)) }
                 }
             }
         }
@@ -1332,7 +1416,7 @@ private fun RecordImages(paths: List<String>, modifier: Modifier = Modifier, onI
         paths.chunked(3).forEachIndexed { rowIndex, row ->
             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 row.forEachIndexed { colIndex, path ->
-                    val bitmap = rememberBitmap(path)
+                    val bitmap = rememberBitmap(path, 360)
                     Box(
                         modifier = Modifier
                             .weight(1f)
@@ -2291,7 +2375,8 @@ private fun WordsScreen(
             saveProgress()
             val wasNew = progress == null
             scope.launch {
-                withContext(Dispatchers.IO) {
+                // 写库出错不能把整个 App 带崩：最多这一次进度没记上
+                runCatching { withContext(Dispatchers.IO) {
                     progressDao.upsert(WordStudy.answer(progressDao.get(lite.headword), lite, known))
                     WordStudy.bumpToday(dayDao, isNew = wasNew && !isReview)
                     if (study.mode == StudyMode.UNKNOWN) {
@@ -2306,7 +2391,7 @@ private fun WordsScreen(
                             unknownDao.insert(UnknownWord(headword = lite.headword, phonetic = lite.phonetic, meaning = lite.meaning))
                         } else unknownDao.setKnownCount(lite.headword, 0)
                     }
-                }
+                } }.onFailure { android.util.Log.w("WordStudy", "answer save failed", it) }
             }
         }
         fun next() {
@@ -2751,7 +2836,7 @@ private fun WordDetailDialog(
             }
         },
         text = {
-            Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 val tags = full?.tags.orEmpty().mapNotNull { PackStore.tagLabel(it) }
                 if (tags.isNotEmpty()) {
                     FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -3165,6 +3250,8 @@ private fun DataScreen(
         }
     }
     var page by remember { mutableStateOf("main") }   // main | settings | privacy
+    var showUpdate by remember { mutableStateOf(false) }
+    if (showUpdate) UpdateDialog(onDismiss = { showUpdate = false })
     if (page != "main") BackHandler { page = "main" }
     @Composable
     fun SubHeader(title: String, sub: String) {
@@ -3343,10 +3430,10 @@ private fun DataScreen(
     "privacy" -> LazyColumn(modifier.fillMaxSize().padding(horizontal = 20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         item { SubHeader("隐私说明", "你的记录只属于你") }
         val points = listOf(
-            Triple(Icons.Default.CloudOff, "不联网", "知行没有申请网络权限，记录、单词、账目、照片和视频都只存在这台手机里，不会上传。"),
-            Triple(Icons.Default.PhotoCamera, "用到的权限", "相机：拍照和录像；通知：每日提醒，可随时关；存储：只在 Android 9 及以下存相册时用。"),
+            Triple(Icons.Default.CloudOff, "平时不联网", "记录、单词、账目、照片和视频都只存在这台手机里，不会上传。只有你点「检查更新」时才联网，只下载版本信息和安装包，不发送你的任何数据。"),
+            Triple(Icons.Default.PhotoCamera, "用到的权限", "相机：拍照和录像；通知：每日提醒，可随时关；通知使用权：自动记账读付款通知，只看微信、支付宝、云闪付；网络和安装应用：只给「检查更新」用；存储：只在 Android 9 及以下存相册时用。"),
             Triple(Icons.Default.Download, "导出由你决定", "备份、存相册、导出给 AI 都只在你点了之后才生成文件；发给谁、发不发，由你自己选。"),
-            Triple(Icons.Default.Delete, "删除", "删掉的记录连同照片和视频一起清掉。卸载知行会删除全部数据，卸载前记得先导出备份。")
+            Triple(Icons.Default.Delete, "删除", "删掉的记录连同照片和视频一起清掉。卸载知行会删除 App 里的数据，但「文档/知行」里的自动备份会留着，重装后可以恢复。")
         )
         items(points.size) { i ->
             val (icon, title, body) = points[i]
@@ -3386,7 +3473,7 @@ private fun DataScreen(
             GlassCard(color = MaterialTheme.colorScheme.surface, shape = RoundedCornerShape(20.dp)) {
                 Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically) { Icon(Icons.Default.CloudOff, null, tint = MaterialTheme.colorScheme.primary); Spacer(Modifier.width(8.dp)); Text("离线可用", fontWeight = FontWeight.Bold) }
-                    Text("记录、单词、账目都保存在这台手机。换机前请先导出备份。", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text("记录、单词、账目都保存在这台手机。离开知行会自动备份到「文档/知行」，换机时把那个文件拷过去恢复。", color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             }
         }
@@ -3394,7 +3481,29 @@ private fun DataScreen(
             Text("备份与恢复", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
             Spacer(Modifier.height(8.dp))
             Button(onClick = { export.launch("zhixing-backup.json") }, modifier = Modifier.fillMaxWidth()) { Text("导出本地备份") }
-            OutlinedButton(onClick = { import.launch(arrayOf("application/json", "text/plain")) }, modifier = Modifier.fillMaxWidth()) { Text("从备份恢复") }
+            OutlinedButton(onClick = { import.launch(arrayOf("application/zip", "application/json", "text/plain", "application/octet-stream")) }, modifier = Modifier.fillMaxWidth()) { Text("从备份恢复") }
+            if (com.swenhao10.localfirst.data.AutoBackup.supported()) {
+                var autoBackupOn by remember { mutableStateOf(com.swenhao10.localfirst.data.AutoBackup.isEnabled(context)) }
+                var lastBackup by remember { mutableStateOf(com.swenhao10.localfirst.data.AutoBackup.lastAt(context)) }
+                Spacer(Modifier.height(4.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text("自动备份", fontWeight = FontWeight.SemiBold)
+                        Text(
+                            if (lastBackup > 0) "上次 ${SimpleDateFormat("M月d日 HH:mm", Locale.CHINA).format(Date(lastBackup))} · 存在「文档/知行」，留最近 3 份" else "离开知行时备份到「文档/知行」，留最近 3 份",
+                            style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    TextButton(onClick = {
+                        scope.launch {
+                            val r = runCatching { withContext(Dispatchers.IO) { com.swenhao10.localfirst.data.AutoBackup.run(context, force = true) } }
+                            lastBackup = com.swenhao10.localfirst.data.AutoBackup.lastAt(context)
+                            onMessage(r.fold({ "已备份到「文档/知行」" }, { "备份失败：${it.message ?: "未知错误"}" }))
+                        }
+                    }) { Text("立即备份") }
+                    Switch(checked = autoBackupOn, onCheckedChange = { autoBackupOn = it; com.swenhao10.localfirst.data.AutoBackup.setEnabled(context, it) })
+                }
+            }
             OutlinedButton(
                 onClick = {
                     scope.launch {
@@ -3416,7 +3525,9 @@ private fun DataScreen(
                 Column(Modifier.fillMaxWidth()) {
                     MineRow(Icons.Default.Settings, "设置", "头像和昵称、通知、主题和外观") { page = "settings" }
                     HorizontalDivider(Modifier.padding(start = 70.dp), color = MaterialTheme.colorScheme.onSurface.copy(alpha = .08f))
-                    MineRow(Icons.Default.Lock, "隐私说明", "不联网，记录只存在这台手机") { page = "privacy" }
+                    MineRow(Icons.Default.Lock, "隐私说明", "平时不联网，记录只存在这台手机") { page = "privacy" }
+                    HorizontalDivider(Modifier.padding(start = 70.dp), color = MaterialTheme.colorScheme.onSurface.copy(alpha = .08f))
+                    MineRow(Icons.Default.Download, "检查更新", "当前 v$versionName，点了才联网") { showUpdate = true }
                 }
             }
         }
@@ -3548,20 +3659,39 @@ private fun labelFor(record: RecordEntry): String = when (record.kind) {
 /** 按图片路径解码一张缩略图（本机文件不存在或损坏返回 null）。 */
 @Composable
 private fun rememberBitmap(path: String?, maxDim: Int = 1024): androidx.compose.ui.graphics.ImageBitmap? {
-    return remember(path) {
-        if (path == null) return@remember null
-        if (isVideoPath(path)) return@remember videoFrame(path, maxDim)?.asImageBitmap()
-        try {
-            val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-            BitmapFactory.decodeFile(path, bounds)
-            if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return@remember null
-            var sample = 1
-            while (bounds.outWidth / sample > maxDim || bounds.outHeight / sample > maxDim) sample *= 2
-            val opts = BitmapFactory.Options().apply { inSampleSize = sample }
-            BitmapFactory.decodeFile(path, opts)?.asImageBitmap()
-        } catch (e: Exception) {
-            null
+    // 解码放到后台线程 + 内存缓存：以前在主线程同步解码，时间轴一滑就卡
+    val key = "$path@$maxDim"
+    val state = androidx.compose.runtime.produceState(initialValue = path?.let { BitmapCache.get(key) }, key) {
+        if (value == null && path != null) {
+            value = withContext(Dispatchers.IO) { decodeBitmapFile(path, maxDim) }?.also { BitmapCache.put(key, it) }
         }
+    }
+    return state.value
+}
+
+/** 解码过的图按字节数缓存，最多用 1/8 的可用内存。 */
+private object BitmapCache {
+    private val cache = object : android.util.LruCache<String, androidx.compose.ui.graphics.ImageBitmap>(
+        (Runtime.getRuntime().maxMemory() / 8).coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
+    ) {
+        override fun sizeOf(key: String, value: androidx.compose.ui.graphics.ImageBitmap) = value.width * value.height * 4
+    }
+    fun get(key: String) = cache.get(key)
+    fun put(key: String, bmp: androidx.compose.ui.graphics.ImageBitmap) { cache.put(key, bmp) }
+}
+
+private fun decodeBitmapFile(path: String, maxDim: Int): androidx.compose.ui.graphics.ImageBitmap? {
+    if (isVideoPath(path)) return videoFrame(path, maxDim)?.asImageBitmap()
+    return try {
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        BitmapFactory.decodeFile(path, bounds)
+        if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
+        var sample = 1
+        while (bounds.outWidth / sample > maxDim || bounds.outHeight / sample > maxDim) sample *= 2
+        val opts = BitmapFactory.Options().apply { inSampleSize = sample }
+        BitmapFactory.decodeFile(path, opts)?.asImageBitmap()
+    } catch (e: Throwable) {
+        null
     }
 }
 
@@ -3634,4 +3764,105 @@ private fun photoUri(context: Context, file: File): Uri =
 @Composable
 private fun <T> useMemoized(vararg keys: Any?, calculate: () -> T): T {
     return remember(*keys) { calculate() }
+}
+
+
+/** 第一次打开（没有任何记录）时问一下要不要从备份恢复。重装后 App 读不到旧文件，只能让用户自己选。 */
+@Composable
+private fun RestorePrompt(db: AppDatabase) {
+    val context = LocalContext.current
+    val prefs = remember { context.getSharedPreferences("zhixing_backup", android.content.Context.MODE_PRIVATE) }
+    var show by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
+    LaunchedEffect(Unit) {
+        if (prefs.getBoolean("restore_asked", false)) return@LaunchedEffect
+        val empty = withContext(Dispatchers.IO) { db.records().all().isEmpty() && db.wordProgress().all().isEmpty() }
+        if (empty) show = true else prefs.edit().putBoolean("restore_asked", true).apply()
+    }
+    val picker = androidx.activity.compose.rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri != null) scope.launch {
+            val r = runCatching { withContext(Dispatchers.IO) { com.swenhao10.localfirst.data.DataTransfer.import(context, uri, db) } }
+            android.widget.Toast.makeText(context, r.fold({ "已恢复" }, { "恢复失败：${it.message ?: "未知错误"}" }), android.widget.Toast.LENGTH_LONG).show()
+        }
+    }
+    if (show) {
+        ZhAlertDialog(
+            onDismissRequest = { show = false; prefs.edit().putBoolean("restore_asked", true).apply() },
+            title = { Text("之前用过知行？") },
+            text = { Text("可以从手机「文档/知行」里的备份恢复，选最新的那个「知行备份-…zip」。以后也能在「我的 → 从备份恢复」里做。") },
+            confirmButton = {
+                TextButton(onClick = {
+                    show = false; prefs.edit().putBoolean("restore_asked", true).apply()
+                    picker.launch(arrayOf("application/zip", "application/json", "application/octet-stream"))
+                }) { Text("选择备份") }
+            },
+            dismissButton = { TextButton(onClick = { show = false; prefs.edit().putBoolean("restore_asked", true).apply() }) { Text("不用了") } }
+        )
+    }
+}
+
+/** 检查更新：只有点了才联网。 */
+@Composable
+private fun UpdateDialog(onDismiss: () -> Unit) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    var state by remember { mutableStateOf("checking") }  // checking | latest | found | downloading | failed | needPerm
+    var info by remember { mutableStateOf<com.swenhao10.localfirst.data.Updater.Info?>(null) }
+    var progress by remember { mutableStateOf(0f) }
+    var error by remember { mutableStateOf("") }
+    var apk by remember { mutableStateOf<File?>(null) }
+    val U = com.swenhao10.localfirst.data.Updater
+    fun check() {
+        state = "checking"
+        scope.launch {
+            val r = runCatching { withContext(Dispatchers.IO) { U.fetchLatest() } }
+            r.onSuccess { info = it; state = if (it.versionCode > U.currentVersionCode(context)) "found" else "latest" }
+             .onFailure { error = it.message ?: "网络不通"; state = "failed" }
+        }
+    }
+    fun tryInstall(file: File) {
+        if (!U.canInstall(context)) { state = "needPerm"; runCatching { context.startActivity(U.installPermissionIntent(context)) }; return }
+        runCatching { U.install(context, file) }.onFailure { error = it.message ?: "打不开安装器"; state = "failed" }
+    }
+    LaunchedEffect(Unit) { check() }
+    val i = info
+    val closeBtn: (@Composable () -> Unit)? = if (state == "latest" || state == "downloading") null else {
+        { TextButton(onClick = onDismiss) { Text("关闭") } }
+    }
+    ZhAlertDialog(
+        onDismissRequest = { if (state != "downloading") onDismiss() },
+        title = { Text(when (state) { "checking" -> "正在检查更新"; "latest" -> "已经是最新版"; "found" -> "有新版本 v${i?.versionName}"; "downloading" -> "正在下载"; "needPerm" -> "需要允许安装"; else -> "检查失败" }) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                when (state) {
+                    "checking" -> LinearProgressIndicator(Modifier.fillMaxWidth())
+                    "latest" -> Text("当前 v${i?.versionName ?: ""} 就是最新的。")
+                    "found" -> Text(i?.notes?.ifBlank { "修复和改进" } ?: "", style = MaterialTheme.typography.bodyMedium)
+                    "downloading" -> {
+                        LinearProgressIndicator(progress = { progress }, modifier = Modifier.fillMaxWidth())
+                        Text("${(progress * 100).toInt()}%，GitHub 不通会自动换加速线路", style = MaterialTheme.typography.labelMedium)
+                    }
+                    "needPerm" -> Text("在系统设置里允许「知行」安装应用，回来再点「安装」。")
+                    else -> Text("$error。可能是网络连不上 GitHub 和加速线路，稍后再试，或者直接装我发你的安装包。")
+                }
+            }
+        },
+        confirmButton = {
+            when (state) {
+                "found" -> TextButton(onClick = {
+                    val inf = i ?: return@TextButton
+                    state = "downloading"; progress = 0f
+                    scope.launch {
+                        val r = runCatching { withContext(Dispatchers.IO) { U.download(context, inf) { p -> progress = p } } }
+                        r.onSuccess { apk = it; state = "found"; tryInstall(it) }.onFailure { error = it.message ?: "下载失败"; state = "failed" }
+                    }
+                }) { Text(if (apk != null) "安装" else "下载并安装") }
+                "needPerm" -> TextButton(onClick = { apk?.let { tryInstall(it) } }) { Text("安装") }
+                "failed" -> TextButton(onClick = { check() }) { Text("重试") }
+                "downloading", "checking" -> {}
+                else -> TextButton(onClick = onDismiss) { Text("好") }
+            }
+        },
+        dismissButton = closeBtn
+    )
 }
