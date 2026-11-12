@@ -110,6 +110,8 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowLeft
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.AccountBalanceWallet
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.CalendarMonth
@@ -926,6 +928,114 @@ private fun warnTone(): Color =
 
 private fun Color.luminanceApprox(): Float = 0.2126f * red + 0.7152f * green + 0.0722f * blue
 
+/**
+ * 会变的数字：只滚动变了的那几位（新数字从下往上进来，200ms），没变的位不动，停住后不再闪。
+ * 按“从右数第几位”对齐，个位永远对着个位。减弱动画时只淡入淡出。
+ */
+@Composable
+private fun RollingText(
+    text: String,
+    style: androidx.compose.ui.text.TextStyle,
+    color: Color = Color.Unspecified,
+    fontWeight: FontWeight? = null
+) {
+    val reduce = LocalReduceMotion.current
+    Row {
+        text.forEachIndexed { i, ch ->
+            key(text.length - 1 - i) {
+                AnimatedContent(
+                    targetState = ch,
+                    transitionSpec = {
+                        if (reduce || !targetState.isDigit() || !initialState.isDigit()) {
+                            fadeIn(tween(Motion.SMALL)) togetherWith fadeOut(tween(90)) using SizeTransform(clip = false)
+                        } else {
+                            val up = targetState > initialState
+                            (slideInVertically(tween(Motion.STATE, easing = Motion.EaseOut)) { if (up) it else -it } + fadeIn(tween(Motion.STATE)))
+                                .togetherWith(slideOutVertically(tween(Motion.STATE, easing = Motion.EaseOut)) { if (up) -it else it } + fadeOut(tween(Motion.EXIT)))
+                                .using(SizeTransform(clip = false))
+                        }
+                    },
+                    label = "digit"
+                ) { c -> Text(c.toString(), style = style, color = color, fontWeight = fontWeight) }
+            }
+        }
+    }
+}
+
+/** 换主题色 / 深浅：每个颜色 300ms 过渡，不整屏闪变。 */
+@Composable
+private fun animateColorScheme(target: androidx.compose.material3.ColorScheme): androidx.compose.material3.ColorScheme {
+    val spec = tween<Color>(300, easing = Motion.EaseInOut)
+    @Composable fun a(c: Color, l: String) = animateColorAsState(c, spec, label = l).value
+    return target.copy(
+        primary = a(target.primary, "primary"),
+        onPrimary = a(target.onPrimary, "onPrimary"),
+        primaryContainer = a(target.primaryContainer, "primaryContainer"),
+        onPrimaryContainer = a(target.onPrimaryContainer, "onPrimaryContainer"),
+        inversePrimary = a(target.inversePrimary, "inversePrimary"),
+        secondary = a(target.secondary, "secondary"),
+        onSecondary = a(target.onSecondary, "onSecondary"),
+        secondaryContainer = a(target.secondaryContainer, "secondaryContainer"),
+        onSecondaryContainer = a(target.onSecondaryContainer, "onSecondaryContainer"),
+        tertiary = a(target.tertiary, "tertiary"),
+        tertiaryContainer = a(target.tertiaryContainer, "tertiaryContainer"),
+        onTertiaryContainer = a(target.onTertiaryContainer, "onTertiaryContainer"),
+        background = a(target.background, "background"),
+        onBackground = a(target.onBackground, "onBackground"),
+        surface = a(target.surface, "surface"),
+        onSurface = a(target.onSurface, "onSurface"),
+        surfaceVariant = a(target.surfaceVariant, "surfaceVariant"),
+        onSurfaceVariant = a(target.onSurfaceVariant, "onSurfaceVariant"),
+        surfaceContainerHigh = a(target.surfaceContainerHigh, "surfaceContainerHigh"),
+        surfaceContainer = a(target.surfaceContainer, "surfaceContainer"),
+        inverseSurface = a(target.inverseSurface, "inverseSurface"),
+        inverseOnSurface = a(target.inverseOnSurface, "inverseOnSurface"),
+        outline = a(target.outline, "outline"),
+        outlineVariant = a(target.outlineVariant, "outlineVariant")
+    )
+}
+
+/**
+ * 背完一轮：底部浮出一张“本轮完成”小卡（少见场景，给一点完成感）。
+ * 勾是画出来的（320ms），配一次确认触感；2.6 秒后自己收起。不撒彩带。
+ */
+@Composable
+private fun RoundDoneCard(count: Int, modifier: Modifier = Modifier) {
+    val reduce = LocalReduceMotion.current
+    val primary = MaterialTheme.colorScheme.primary
+    val onPrimary = MaterialTheme.colorScheme.onPrimary
+    val check = remember { Animatable(0f) }
+    LaunchedEffect(Unit) {
+        if (reduce) check.snapTo(1f) else { delay(80); check.animateTo(1f, tween(320, easing = Motion.EaseOut)) }
+    }
+    val shape = RoundedCornerShape(20.dp)
+    Row(
+        modifier
+            .widthIn(max = 340.dp)
+            .then(if (LocalBackdrop.current != null) Modifier.glass(shape) else Modifier.clip(shape).background(MaterialTheme.colorScheme.surfaceContainerHigh))
+            .padding(horizontal = 18.dp, vertical = 14.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Canvas(Modifier.size(32.dp)) {
+            drawCircle(primary)
+            val path = androidx.compose.ui.graphics.Path().apply {
+                moveTo(size.width * 0.28f, size.height * 0.52f)
+                lineTo(size.width * 0.44f, size.height * 0.67f)
+                lineTo(size.width * 0.73f, size.height * 0.36f)
+            }
+            val measure = androidx.compose.ui.graphics.PathMeasure().apply { setPath(path, false) }
+            val seg = androidx.compose.ui.graphics.Path()
+            measure.getSegment(0f, measure.length * check.value, seg, true)
+            drawPath(seg, onPrimary, style = Stroke(width = 3.dp.toPx(), cap = androidx.compose.ui.graphics.StrokeCap.Round, join = androidx.compose.ui.graphics.StrokeJoin.Round))
+        }
+        Spacer(Modifier.width(12.dp))
+        Column {
+            Text("本轮完成", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+            Text("背了 $count 个词，已记到记录里", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+    }
+}
+
 /** 分类配色：只给现有分类上色，其余走灰色。 */
 private fun categoryColor(category: String?, primary: Color): Color = when (category) {
     "餐饮" -> Color(0xFFE08A2C)
@@ -945,6 +1055,9 @@ private fun LocalFirstApp(db: AppDatabase) {
     val scope = rememberCoroutineScope()
     var tab by remember { mutableStateOf(Tab.RECORD) }
     var showAddRecord by remember { mutableStateOf(false) }
+    // 背完一轮的完成卡：背了几个词；null = 不显示
+    var roundDone by remember { mutableStateOf<Int?>(null) }
+    var roundDoneShown by remember { mutableStateOf(0) }
     // 正在编辑的记录（null = 新发一条）
     var editingRecord by remember { mutableStateOf<RecordEntry?>(null) }
     // 每次打开发记录页 +1：退场动画还没放完又点开时，用新的一份草稿，不沿用上一次的
@@ -1064,7 +1177,7 @@ private fun LocalFirstApp(db: AppDatabase) {
     }
 
     val baseScheme = paletteFor(paletteId, useDarkTheme)
-    MaterialTheme(colorScheme = if (glassOn) glassScheme(baseScheme, useDarkTheme) else baseScheme) {
+    MaterialTheme(colorScheme = animateColorScheme(if (glassOn) glassScheme(baseScheme, useDarkTheme) else baseScheme)) {
         val layerBackdrop = rememberLayerBackdrop()
         val overlays = remember { mutableStateMapOf<Any, OverlayEntry>() }
         CompositionLocalProvider(
@@ -1139,7 +1252,8 @@ private fun LocalFirstApp(db: AppDatabase) {
                         study = study,
                         modifier = Modifier.padding(padding),
                         onMessage = { message = it },
-                        onUndoable = { msg, undo -> showUndo(msg, undo, {}) }
+                        onUndoable = { msg, undo -> showUndo(msg, undo, {}) },
+                        onRoundDone = { n -> roundDoneShown = n; roundDone = n }
                     )
                     Tab.OVERVIEW -> OverviewScreen(
                         records = records,
@@ -1182,6 +1296,19 @@ private fun LocalFirstApp(db: AppDatabase) {
                 }
             }
         }
+        LaunchedEffect(roundDone) {
+            if (roundDone != null) {
+                haptic.performHapticFeedback(HapticFeedbackType.Confirm)
+                delay(2600)
+                roundDone = null
+            }
+        }
+        AnimatedVisibility(
+            visible = roundDone != null,
+            modifier = Modifier.align(Alignment.BottomCenter).navigationBarsPadding().padding(bottom = 104.dp, start = 16.dp, end = 16.dp),
+            enter = scaleIn(tween(Motion.STATE, easing = Motion.EaseOut), initialScale = .9f) + fadeIn(tween(Motion.STATE)),
+            exit = fadeOut(tween(Motion.EXIT)) + scaleOut(tween(Motion.EXIT), targetScale = .96f)
+        ) { RoundDoneCard(roundDoneShown) }
         LaunchedEffect(message) {
             if (message.isNotBlank()) {
                 snackbarHostState.showSnackbar(message)
@@ -1333,6 +1460,7 @@ private fun RecordScreen(
     val listState = androidx.compose.foundation.lazy.rememberLazyListState()
     val listScope = rememberCoroutineScope()
     var showDatePick by remember { mutableStateOf(false) }
+    var flash by remember { mutableStateOf<Pair<String, Int>?>(null) }
     val recordDays = remember(records) { records.map { dayKey(it.createdAt) }.toSet() }
     if (showDatePick) {
         val utcFmt = remember { SimpleDateFormat("yyyy-MM-dd", Locale.CHINA).apply { timeZone = java.util.TimeZone.getTimeZone("UTC") } }
@@ -1351,12 +1479,20 @@ private fun RecordScreen(
                     // 算出那一天的标题在列表里是第几项：header 占 1，之后每天 = 1 个标题 + 当天条数
                     var idx = 1
                     var target = -1
+                    var targetKey: String? = null
                     for ((key, list) in records.groupBy { dayKey(it.createdAt) }) {
-                        if (key <= picked) { target = idx; break }
+                        if (key <= picked) { target = idx; targetKey = key; break }
                         idx += 1 + list.size
                     }
                     if (target < 0) target = (idx - 1).coerceAtLeast(0)
-                    listScope.launch { listState.animateScrollToItem(target) }
+                    listScope.launch {
+                        // 远距离先瞬移到附近，再平滑滚最后一小段，不让人看一长串飞过去
+                        val from = listState.firstVisibleItemIndex
+                        if (kotlin.math.abs(target - from) > 12) listState.scrollToItem(if (target > from) target - 4 else target + 4)
+                        listState.animateScrollToItem(target)
+                        // 落地后那一天的标题闪一下，告诉你到了
+                        targetKey?.let { flash = it to (flash?.second ?: 0) + 1 }
+                    }
                 }) { Text("跳过去") }
             },
             dismissButton = { TextButton(onClick = { showDatePick = false }) { Text("取消") } }
@@ -1387,11 +1523,15 @@ private fun RecordScreen(
                 Spacer(Modifier.width(12.dp))
                 Column(Modifier.weight(1f)) {
                     Text(nickname, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold, maxLines = 1)
-                    Text(
-                        "已记录 ${records.size} 条 · 第 $dayCount 天",
-                        style = MaterialTheme.typography.labelMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
+                    Row {
+                        val st = MaterialTheme.typography.labelMedium
+                        val c = MaterialTheme.colorScheme.onSurfaceVariant
+                        Text("已记录 ", style = st, color = c)
+                        RollingText("${records.size}", st, c)
+                        Text(" 条 · 第 ", style = st, color = c)
+                        RollingText("$dayCount", st, c)
+                        Text(" 天", style = st, color = c)
+                    }
                 }
                 if (LocalBackdrop.current != null) {
                     GlassButton(onClick = { if (records.isEmpty()) onSearch() else showDatePick = true }, modifier = Modifier.size(46.dp)) {
@@ -1418,7 +1558,7 @@ private fun RecordScreen(
             // 按天分组，records 已按时间倒序，groupBy 保持最新一天在前
             val groups = records.groupBy { dayKey(it.createdAt) }
             groups.forEach { (key, dayRecords) ->
-                item(key = "day-$key") { Box(rowMotion(reduce)) { DayHeader(time = dayRecords.first().createdAt) } }
+                item(key = "day-$key") { Box(rowMotion(reduce)) { DayHeader(time = dayRecords.first().createdAt, flashNonce = flash?.takeIf { it.first == key }?.second ?: 0) } }
                 items(dayRecords, key = { "rec-${it.id}" }) { record ->
                     Box(rowMotion(reduce)) {
                         TimelineRecord(
@@ -1506,9 +1646,17 @@ private fun RenameDialog(current: String, onCancel: () -> Unit, onSave: (String)
 
 /** 天组头：今天 / 昨天 / M月d日 + 灰色日期星期。 */
 @Composable
-private fun DayHeader(time: Long) {
+private fun DayHeader(time: Long, flashNonce: Int = 0) {
+    // 跳到这天后背景闪一次（0.6 → 0，600ms），只闪一次，不持续脉动
+    val glow = remember { Animatable(0f) }
+    LaunchedEffect(flashNonce) {
+        if (flashNonce > 0) { glow.snapTo(0.6f); glow.animateTo(0f, tween(600, easing = Motion.EaseOut)) }
+    }
+    val glowColor = MaterialTheme.colorScheme.primaryContainer
     Row(
-        modifier = Modifier.fillMaxWidth().padding(top = 20.dp, bottom = 8.dp),
+        modifier = Modifier.fillMaxWidth().padding(top = 12.dp)
+            .drawBehind { if (glow.value > 0f) drawRoundRect(glowColor.copy(alpha = glow.value), cornerRadius = CornerRadius(12.dp.toPx())) }
+            .padding(top = 8.dp, bottom = 8.dp),
         verticalAlignment = Alignment.Bottom
     ) {
         Text(dayTitle(time), style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
@@ -1575,12 +1723,14 @@ private fun RecordImages(paths: List<String>, modifier: Modifier = Modifier, onI
                     .background(MaterialTheme.colorScheme.surfaceVariant)
                     .then(if (onImageClick != null) Modifier.clickable { onImageClick(0) } else Modifier)
             ) {
+                // 后台解码完再淡入（200ms）；缓存里有的直接显示
+                val imgAlpha by animateFloatAsState(if (bitmap != null) 1f else 0f, tween(Motion.STATE), label = "imgIn")
                 if (bitmap != null) {
                     Image(
                         bitmap = bitmap,
                         contentDescription = if (video) "记录视频" else "记录图片",
                         contentScale = ContentScale.Crop,
-                        modifier = Modifier.fillMaxSize()
+                        modifier = Modifier.fillMaxSize().graphicsLayer { alpha = imgAlpha }
                     )
                 }
                 if (video) {
@@ -1605,12 +1755,13 @@ private fun RecordImages(paths: List<String>, modifier: Modifier = Modifier, onI
                             .background(MaterialTheme.colorScheme.surfaceVariant)
                             .then(if (onImageClick != null) Modifier.clickable { onImageClick(rowIndex * 3 + colIndex) } else Modifier)
                     ) {
+                        val imgAlpha by animateFloatAsState(if (bitmap != null) 1f else 0f, tween(Motion.STATE), label = "imgIn")
                         if (bitmap != null) {
                             Image(
                                 bitmap = bitmap,
                                 contentDescription = "记录图片",
                                 contentScale = ContentScale.Crop,
-                                modifier = Modifier.fillMaxSize()
+                                modifier = Modifier.fillMaxSize().graphicsLayer { alpha = imgAlpha }
                             )
                         }
                         if (isVideoPath(path)) PlayBadge(small = true)
@@ -2525,7 +2676,8 @@ private fun WordsScreen(
     study: StudyProgress,
     modifier: Modifier,
     onMessage: (String) -> Unit,
-    onUndoable: (String, suspend () -> Unit) -> Unit
+    onUndoable: (String, suspend () -> Unit) -> Unit,
+    onRoundDone: (Int) -> Unit = {}
 ) {
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
@@ -2581,7 +2733,7 @@ private fun WordsScreen(
                     recordsDao.insert(RecordEntry(kind = "study", text = "背了 $reviewed 个词"))
                 }
             }
-            onMessage("已记到记录里")
+            onRoundDone(reviewed)
         }
         study.showMeaning = false; study.known = 0; study.unknown = 0; study.inStudy = false
         study.queue.clear(); study.reviewPos = 0; study.mode = StudyMode.BOOK
@@ -3148,7 +3300,8 @@ private fun WordsScreen(
 private fun StatColumn(label: String, value: String, highlight: Boolean = false) {
     Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
         Text(label, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        Text(value, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold, color = if (highlight) warnTone() else MaterialTheme.colorScheme.onSurface)
+        val c by animateColorAsState(if (highlight) warnTone() else MaterialTheme.colorScheme.onSurface, tween(Motion.STATE), label = "statColor")
+        RollingText(value, MaterialTheme.typography.titleLarge, c, FontWeight.Bold)
     }
 }
 
@@ -3242,6 +3395,8 @@ private fun WordDetailDialog(
 @Composable
 private fun OverviewScreen(records: List<RecordEntry>, wordCount: Int, modifier: Modifier, onDeleteRecord: (RecordEntry) -> Unit) {
     val now = Calendar.getInstance()
+    val reduce = LocalReduceMotion.current
+    val haptic = LocalHapticFeedback.current
     var year by remember { mutableStateOf(now.get(Calendar.YEAR)) }
     var month by remember { mutableStateOf(now.get(Calendar.MONTH)) }
     var selectedDay by remember { mutableStateOf<Int?>(now.get(Calendar.DAY_OF_MONTH)) }
@@ -3284,16 +3439,21 @@ private fun OverviewScreen(records: List<RecordEntry>, wordCount: Int, modifier:
                             Text(if (balance >= 0) "有结余" else "超支", color = if (glass) primary else onP, style = MaterialTheme.typography.labelSmall, modifier = Modifier.padding(horizontal = 10.dp, vertical = 3.dp))
                         }
                     }
-                    Text(formatMoney(balance), style = MaterialTheme.typography.displaySmall, fontWeight = FontWeight.Bold, color = fg)
+                    RollingText(formatMoney(balance), MaterialTheme.typography.displaySmall, fg, FontWeight.Bold)
                     Spacer(Modifier.height(4.dp))
                     val total = (income + expense).takeIf { it > 0 } ?: 1L
-                    Box(Modifier.fillMaxWidth().height(6.dp).clip(RoundedCornerShape(50)).background(fg.copy(alpha = .12f))) {
-                        Box(
-                            Modifier.fillMaxWidth(income.toFloat() / total).fillMaxHeight()
-                                .clip(RoundedCornerShape(50))
-                                .background(if (glass) primary else onP.copy(alpha = .7f))
-                        )
-                    }
+                    // 收入占比条：在 drawBehind 里按动画后的比例画，不触发重新布局
+                    val incomeTarget = income.toFloat() / total
+                    val incomeAnim = remember { Animatable(0f) }
+                    val incomeSpec = motion(tween<Float>(500, easing = Motion.EaseEnter))
+                    LaunchedEffect(incomeTarget) { incomeAnim.animateTo(incomeTarget, incomeSpec) }
+                    val barColor = if (glass) primary else onP.copy(alpha = .7f)
+                    Box(
+                        Modifier.fillMaxWidth().height(6.dp).clip(RoundedCornerShape(50)).background(fg.copy(alpha = .12f))
+                            .drawBehind {
+                                drawRoundRect(barColor, size = size.copy(width = size.width * incomeAnim.value), cornerRadius = CornerRadius(size.height / 2))
+                            }
+                    )
                     Row(Modifier.fillMaxWidth()) {
                         Text("收入 ${formatMoney(income)}", color = sub, style = MaterialTheme.typography.labelMedium, modifier = Modifier.weight(1f))
                         Text("支出 ${formatMoney(expense)}", color = sub, style = MaterialTheme.typography.labelMedium)
@@ -3322,15 +3482,21 @@ private fun OverviewScreen(records: List<RecordEntry>, wordCount: Int, modifier:
                 GlassCard(color = MaterialTheme.colorScheme.surface, shape = RoundedCornerShape(20.dp)) {
                     Column(Modifier.fillMaxWidth().padding(18.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
                         Text("这个月花在哪", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-                        byCategory.forEach { (cat, cents) ->
+                        byCategory.forEachIndexed { i, (cat, cents) ->
                             Row(verticalAlignment = Alignment.CenterVertically) {
                                 Text(cat, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold, modifier = Modifier.width(44.dp))
-                                Box(Modifier.weight(1f).height(10.dp).clip(RoundedCornerShape(50)).background(MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f))) {
-                                    Box(
-                                        Modifier.fillMaxWidth((cents.toFloat() / maxValue).coerceIn(0.04f, 1f)).fillMaxHeight()
-                                            .clip(RoundedCornerShape(50)).background(categoryColor(cat, primary))
-                                    )
-                                }
+                                // 分类条从左长出来，条与条错开 60ms
+                                val target = (cents.toFloat() / maxValue).coerceIn(0.04f, 1f)
+                                val grow = remember(cat) { Animatable(0f) }
+                                val growSpec = motion(tween<Float>(500, delayMillis = i * 60, easing = Motion.EaseEnter))
+                                LaunchedEffect(target) { grow.animateTo(target, growSpec) }
+                                val catColor = categoryColor(cat, primary)
+                                Box(
+                                    Modifier.weight(1f).height(10.dp).clip(RoundedCornerShape(50)).background(MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f))
+                                        .drawBehind {
+                                            drawRoundRect(catColor, size = size.copy(width = size.width * grow.value), cornerRadius = CornerRadius(size.height / 2))
+                                        }
+                                )
                                 Spacer(Modifier.width(10.dp))
                                 Text(formatMoney(cents), style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
                             }
@@ -3339,14 +3505,18 @@ private fun OverviewScreen(records: List<RecordEntry>, wordCount: Int, modifier:
                 }
             }
         }
-        item { SectionTitle("每天记了什么", "有记录的日子会标出来") }
+        item { SectionTitle("每天记了什么", "点一天看当天的记录") }
         item {
             GlassCard(color = MaterialTheme.colorScheme.surface, shape = RoundedCornerShape(20.dp)) {
                 Column(Modifier.fillMaxWidth().padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        TextButton(onClick = { shiftMonth(-1) }) { Text("< 上个月") }
-                        Text(monthLabel(year, month), fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f), textAlign = androidx.compose.ui.text.style.TextAlign.Center)
-                        TextButton(onClick = { shiftMonth(1) }) { Text("下个月 >") }
+                        IconButton(onClick = { shiftMonth(-1) }) {
+                            Icon(Icons.AutoMirrored.Filled.KeyboardArrowLeft, contentDescription = "上个月")
+                        }
+                        Text(monthLabel(year, month), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f), textAlign = TextAlign.Center)
+                        IconButton(onClick = { shiftMonth(1) }) {
+                            Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, contentDescription = "下个月")
+                        }
                     }
                     if (!isCurrentMonth) {
                         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center) {
@@ -3358,48 +3528,110 @@ private fun OverviewScreen(records: List<RecordEntry>, wordCount: Int, modifier:
                     }
                     Row(Modifier.fillMaxWidth()) {
                         listOf("日", "一", "二", "三", "四", "五", "六").forEach { w ->
-                            Text(w, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant, textAlign = androidx.compose.ui.text.style.TextAlign.Center, modifier = Modifier.weight(1f))
+                            Text(w, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant, textAlign = TextAlign.Center, modifier = Modifier.weight(1f))
                         }
                     }
-                    monthCells(year, month).chunked(7).forEach { week ->
-                        Row(Modifier.fillMaxWidth()) {
-                            week.forEach { day ->
-                                val dayRecords = if (day == null) emptyList() else monthRecords.filter { dayOf(it.createdAt) == day }
-                                val isToday = isCurrentMonth && day == now.get(Calendar.DAY_OF_MONTH)
-                                val selected = isToday
-                                Box(
-                                    modifier = Modifier.weight(1f).height(62.dp).padding(2.dp)
-                                        .background(
+                    // 换月：下个月从右边进、上个月从左边进（1/8 宽），200ms
+                    AnimatedContent(
+                        targetState = year * 12 + month,
+                        transitionSpec = {
+                            val fwd = targetState > initialState
+                            if (reduce) fadeIn(tween(Motion.SMALL)) togetherWith fadeOut(tween(90)) using SizeTransform(clip = false)
+                            else (slideInHorizontally(tween(Motion.STATE, easing = Motion.EaseOut)) { if (fwd) it / 8 else -it / 8 } + fadeIn(tween(Motion.STATE)))
+                                .togetherWith(slideOutHorizontally(tween(Motion.EXIT, easing = Motion.EaseOut)) { if (fwd) -it / 8 else it / 8 } + fadeOut(tween(Motion.EXIT)))
+                                .using(SizeTransform(clip = false))
+                        },
+                        label = "month"
+                    ) { ym ->
+                        val y = ym / 12
+                        val m = ym % 12
+                        val cellRecords = remember(records, ym) { records.filter { monthOf(it.createdAt) == y to m }.groupBy { dayOf(it.createdAt) } }
+                        val isThisMonth = y == now.get(Calendar.YEAR) && m == now.get(Calendar.MONTH)
+                        Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                            monthCells(y, m).chunked(7).forEach { week ->
+                                Row(Modifier.fillMaxWidth()) {
+                                    week.forEach { day ->
+                                        val dayRecords = if (day == null) emptyList() else cellRecords[day].orEmpty()
+                                        val isToday = isThisMonth && day == now.get(Calendar.DAY_OF_MONTH)
+                                        val selected = day != null && day == selectedDay && ym == year * 12 + month
+                                        val cellBg by animateColorAsState(
                                             when {
                                                 selected -> MaterialTheme.colorScheme.primaryContainer
                                                 dayRecords.isNotEmpty() -> MaterialTheme.colorScheme.surfaceVariant
                                                 else -> Color.Transparent
                                             },
-                                            RoundedCornerShape(10.dp)
-                                        ),
-                                    contentAlignment = Alignment.TopCenter
-                                ) {
-                                    if (day != null) {
-                                        Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.padding(top = 4.dp)) {
-                                            Text(
-                                                "$day",
-                                                fontWeight = if (isToday) FontWeight.Bold else FontWeight.Normal,
-                                                color = if (isToday) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
-                                                fontSize = 13.sp
-                                            )
-                                            dayRecords.take(2).forEach { r ->
-                                                Text(
-                                                    labelFor(r),
-                                                    fontSize = 9.sp,
-                                                    maxLines = 1,
-                                                    color = if (r.kind == "expense") MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.onSurfaceVariant
-                                                )
+                                            tween(Motion.SMALL), label = "cellBg"
+                                        )
+                                        Box(
+                                            modifier = Modifier.weight(1f).height(62.dp).padding(2.dp)
+                                                .clip(RoundedCornerShape(10.dp))
+                                                .background(cellBg)
+                                                .then(
+                                                    if (day != null) Modifier.clickable {
+                                                        if (selectedDay != day) haptic.performHapticFeedback(HapticFeedbackType.SegmentTick)
+                                                        selectedDay = day
+                                                    } else Modifier
+                                                ),
+                                            contentAlignment = Alignment.TopCenter
+                                        ) {
+                                            if (day != null) {
+                                                Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.padding(top = 4.dp)) {
+                                                    Text(
+                                                        "$day",
+                                                        style = MaterialTheme.typography.bodySmall,
+                                                        fontWeight = if (isToday || selected) FontWeight.Bold else FontWeight.Normal,
+                                                        color = when {
+                                                            selected -> MaterialTheme.colorScheme.onPrimaryContainer
+                                                            isToday -> MaterialTheme.colorScheme.primary
+                                                            else -> MaterialTheme.colorScheme.onSurface
+                                                        }
+                                                    )
+                                                    dayRecords.take(2).forEach { r ->
+                                                        Text(
+                                                            labelFor(r),
+                                                            style = MaterialTheme.typography.labelSmall,
+                                                            maxLines = 1,
+                                                            color = if (r.kind == "expense") warnTone() else MaterialTheme.colorScheme.onSurfaceVariant
+                                                        )
+                                                    }
+                                                }
                                             }
                                         }
                                     }
                                 }
                             }
                         }
+                    }
+                }
+            }
+        }
+        // 选中那天的记录：换一天时淡入 + 8dp 上移
+        item {
+            AnimatedContent(
+                targetState = selectedDay?.let { year * 10000 + month * 100 + it },
+                transitionSpec = {
+                    if (reduce) fadeIn(tween(Motion.SMALL)) togetherWith fadeOut(tween(90)) using SizeTransform(clip = false)
+                    else (fadeIn(tween(Motion.STATE, easing = Motion.EaseOut)) + slideInVertically(tween(Motion.STATE, easing = Motion.EaseOut)) { it.coerceAtMost(24) })
+                        .togetherWith(fadeOut(tween(90)))
+                        .using(SizeTransform(clip = false))
+                },
+                label = "dayDetail"
+            ) { key ->
+                if (key == null) {
+                    Spacer(Modifier.height(1.dp))
+                } else {
+                    val y = key / 10000
+                    val m = (key / 100) % 100
+                    val d = key % 100
+                    val list = remember(records, key) { records.filter { monthOf(it.createdAt) == y to m && dayOf(it.createdAt) == d } }
+                    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        Text(
+                            "${m + 1}月${d}日 · " + if (list.isEmpty()) "这天没有记录" else "${list.size} 条",
+                            style = MaterialTheme.typography.titleSmall,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        list.forEach { r -> RecordItemCard(r, onDelete = { onDeleteRecord(r) }) }
                     }
                 }
             }
@@ -3417,7 +3649,7 @@ private fun StatTile(value: String, label: String, modifier: Modifier = Modifier
         modifier = modifier
     ) {
         Column(Modifier.fillMaxWidth().padding(vertical = 14.dp, horizontal = 12.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-            Text(value, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
+            RollingText(value, MaterialTheme.typography.headlineSmall, MaterialTheme.colorScheme.onSurface, FontWeight.Bold)
             Text(label, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
     }
@@ -3612,7 +3844,19 @@ private fun DataScreen(
             }
         }
     }
-    when (page) {
+    // 我的 → 设置 / 隐私 / 关于：有层级的转场，进去从右边 1/5 处滑入，返回反向
+    val reducePage = LocalReduceMotion.current
+    AnimatedContent(
+        targetState = page,
+        transitionSpec = {
+            val fwd = targetState != "main"
+            if (reducePage) fadeIn(tween(Motion.SMALL)) togetherWith fadeOut(tween(90))
+            else (slideInHorizontally(tween(250, easing = Motion.EaseOut)) { if (fwd) it / 5 else -it / 5 } + fadeIn(tween(Motion.STATE)))
+                .togetherWith(slideOutHorizontally(tween(Motion.STATE, easing = Motion.EaseOut)) { if (fwd) -it / 10 else it / 10 } + fadeOut(tween(120)))
+        },
+        label = "minePage"
+    ) { pg ->
+    when (pg) {
     "settings" -> LazyColumn(modifier.fillMaxSize().padding(horizontal = 20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         item { SubHeader("设置", "头像、通知、外观") }
         item {
@@ -3893,6 +4137,7 @@ private fun DataScreen(
             }
         }
         item { Spacer(Modifier.height(88.dp)) }
+    }
     }
     }
 }
