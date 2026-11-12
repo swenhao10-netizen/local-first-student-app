@@ -128,6 +128,9 @@ import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material.icons.filled.Info
+import androidx.compose.ui.text.drawText
+import androidx.compose.ui.graphics.drawscope.clipRect
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -2874,6 +2877,9 @@ private fun WordsScreen(
                 }
             }
             Box(Modifier.fillMaxWidth()) {
+            // 卡片堆：下面露出接下来几张卡的边缘（还剩几张就叠几层，最多 2 层）
+            val remaining = if (isReview) study.queue.size - study.reviewPos - 1 else total - index - 1
+            WordStackPeek(remaining.coerceIn(0, 2))
             GlassCard(
                 color = MaterialTheme.colorScheme.surface,
                 shape = RoundedCornerShape(28.dp),
@@ -4019,6 +4025,22 @@ private fun DataScreen(
         }
         item { Spacer(Modifier.height(88.dp)) }
     }
+    "about" -> LazyColumn(modifier.fillMaxSize().padding(horizontal = 20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        item { SubHeader("关于知行", "v$versionName") }
+        item {
+            GlassCard(color = MaterialTheme.colorScheme.surface, shape = RoundedCornerShape(20.dp)) {
+                ExplodedRecordShowcase(Modifier.fillMaxWidth().padding(vertical = 18.dp, horizontal = 8.dp))
+            }
+        }
+        item {
+            Text(
+                "一条记录由这几层组成：文字、金额、图片和时间都存在知行自己的文件夹里，平时不联网，不上传。",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+        item { Spacer(Modifier.height(88.dp)) }
+    }
     "privacy" -> LazyColumn(modifier.fillMaxSize().padding(horizontal = 20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         item { SubHeader("隐私说明", "你的记录只属于你") }
         val points = listOf(
@@ -4120,6 +4142,8 @@ private fun DataScreen(
                     MineRow(Icons.Default.Lock, "隐私说明", "平时不联网，记录只存在这台手机") { page = "privacy" }
                     HorizontalDivider(Modifier.padding(start = 70.dp), color = MaterialTheme.colorScheme.onSurface.copy(alpha = .08f))
                     MineRow(Icons.Default.Download, "检查更新", "当前 v$versionName，点了才联网") { showUpdate = true }
+                    HorizontalDivider(Modifier.padding(start = 70.dp), color = MaterialTheme.colorScheme.onSurface.copy(alpha = .08f))
+                    MineRow(Icons.Default.Info, "关于知行", "一条记录是怎么存的") { page = "about" }
                 }
             }
         }
@@ -4139,6 +4163,168 @@ private fun DataScreen(
         item { Spacer(Modifier.height(88.dp)) }
     }
     }
+    }
+}
+
+/**
+ * 关于页的分层展开图（Dimensional Drawing 的做法）：一条记录拆成 6 层——
+ * 手机 → 记录卡片 → 时间轴 → 图片 → 文字/金额 → 锁，从平面变形到轴测视角并各自升起，层与层间隔 100ms。
+ * 单色、只画结构；先描边，填充在每层动画 55% 之后才淡入；ease-in-out，不回弹。
+ * 画面是进度 t 的纯函数。减弱动画时直接显示展开后的静态图。点一下收起 / 再展开（收起倒序、更快）。
+ */
+private class ExplodedLayer(val label: String, val z: Float, val anchor: Offset, val draw: ExplodedPen.() -> Unit)
+
+private class ExplodedPen(
+    val scope: androidx.compose.ui.graphics.drawscope.DrawScope,
+    val project: (Float, Float) -> Offset,
+    val stroke: Color,
+    val fill: Color,
+    val slot: Color,
+    val strokeAlpha: Float,
+    val fillAlpha: Float,
+    val strokePx: Float
+) {
+    fun rect(l: Float, t: Float, r: Float, b: Float, filled: Boolean = true, slotFill: Boolean = false) {
+        val path = androidx.compose.ui.graphics.Path().apply {
+            val a = project(l, t); val bb = project(r, t); val c = project(r, b); val d = project(l, b)
+            moveTo(a.x, a.y); lineTo(bb.x, bb.y); lineTo(c.x, c.y); lineTo(d.x, d.y); close()
+        }
+        if (filled && fillAlpha > 0f) scope.drawPath(path, (if (slotFill) slot else fill).copy(alpha = (if (slotFill) slot.alpha else 1f) * fillAlpha))
+        scope.drawPath(path, stroke.copy(alpha = stroke.alpha * strokeAlpha), style = Stroke(width = strokePx))
+    }
+    fun line(vararg pts: Pair<Float, Float>) {
+        val path = androidx.compose.ui.graphics.Path()
+        pts.forEachIndexed { i, (x, y) -> val o = project(x, y); if (i == 0) path.moveTo(o.x, o.y) else path.lineTo(o.x, o.y) }
+        scope.drawPath(path, stroke.copy(alpha = stroke.alpha * strokeAlpha), style = Stroke(width = strokePx, cap = androidx.compose.ui.graphics.StrokeCap.Round))
+    }
+    fun dot(x: Float, y: Float, r: Float) {
+        val o = project(x, y)
+        scope.drawCircle(stroke.copy(alpha = stroke.alpha * strokeAlpha), radius = r, center = o)
+    }
+}
+
+@Composable
+private fun ExplodedRecordShowcase(modifier: Modifier = Modifier) {
+    val reduce = LocalReduceMotion.current
+    val haptic = LocalHapticFeedback.current
+    val scheme = MaterialTheme.colorScheme
+    val strokeColor = scheme.onSurfaceVariant
+    val fillColor = scheme.surface.copy(alpha = 1f)
+    val slotColor = scheme.onSurface.copy(alpha = .12f)
+    val labelColor = scheme.onSurfaceVariant
+    val measurer = androidx.compose.ui.text.rememberTextMeasurer()
+    val labelStyle = MaterialTheme.typography.labelSmall
+    // 平面坐标：手机 120 × 220；z 是每层升起的高度
+    val layers = remember {
+        listOf(
+            ExplodedLayer("这台手机", 0f, Offset(0f, 220f)) {
+                rect(0f, 0f, 120f, 220f); line(50f to 9f, 70f to 9f)
+            },
+            ExplodedLayer("记录卡片", 34f, Offset(10f, 180f)) { rect(10f, 40f, 110f, 180f) },
+            ExplodedLayer("时间轴", 64f, Offset(20f, 170f)) { dot(20f, 52f, 3f * scope.density); line(20f to 60f, 20f to 170f) },
+            ExplodedLayer("图片", 98f, Offset(30f, 140f)) {
+                rect(30f, 90f, 100f, 140f); line(30f to 140f, 52f to 116f, 66f to 129f, 82f to 110f, 100f to 136f)
+            },
+            ExplodedLayer("文字 · 金额", 128f, Offset(30f, 160f)) {
+                rect(30f, 50f, 95f, 57f, slotFill = true); rect(30f, 63f, 78f, 70f, slotFill = true)
+                rect(30f, 150f, 66f, 158f, slotFill = true); rect(74f, 149f, 100f, 160f, slotFill = true)
+            },
+            ExplodedLayer("只在本机", 168f, Offset(50f, 112f)) {
+                rect(50f, 98f, 70f, 112f); line(54f to 98f, 54f to 90f, 66f to 90f, 66f to 98f)
+            }
+        )
+    }
+    val stepMs = 100f
+    val layerMs = 900f
+    val totalMs = layerMs + stepMs * (layers.size - 1) + 300f   // 最后 300ms 给结尾那句话
+    val t = remember { Animatable(if (reduce) 1f else 0f) }
+    var exploded by remember { mutableStateOf(true) }
+    LaunchedEffect(exploded) {
+        val target = if (exploded) 1f else 0f
+        if (reduce) t.snapTo(target)
+        else t.animateTo(target, tween(if (exploded) totalMs.toInt() else (totalMs * 0.6f).toInt(), easing = LinearEasingForTime))
+    }
+    Column(modifier, horizontalAlignment = Alignment.CenterHorizontally) {
+        Canvas(
+            Modifier.fillMaxWidth().height(300.dp)
+                .clickable(interactionSource = remember { MutableInteractionSource() }, indication = null) {
+                    haptic.performHapticFeedback(HapticFeedbackType.GestureThresholdActivate)
+                    exploded = !exploded
+                }
+        ) {
+            val ms = t.value * totalMs
+            val cw = size.width; val ch = size.height
+            val s = ch / 262f
+            val strokePx = 1.dp.toPx()
+            // 平面：手机居中；轴测：矩阵 (.94, .17, -.34, .47)，整组放在右侧 60% 处，左边留给层名
+            val flatX0 = cw / 2f - s * 60f
+            val flatY0 = ch / 2f - s * 110f
+            val isoX0 = cw * 0.6f - s * 19f
+            val isoY0 = ch / 2f - s * 2.5f
+            layers.forEachIndexed { i, layer ->
+                val raw = ((ms - i * stepMs) / layerMs).coerceIn(0f, 1f)
+                val l = Motion.EaseLayer.transform(raw)
+                val project: (Float, Float) -> Offset = { x, y ->
+                    val fx = flatX0 + s * x
+                    val fy = flatY0 + s * y
+                    val ix = isoX0 + s * (0.94f * x - 0.34f * y)
+                    val iy = isoY0 + s * (0.17f * x + 0.47f * y) - s * layer.z
+                    Offset(fx + (ix - fx) * l, fy + (iy - fy) * l)
+                }
+                // 先描边：线稿一直在；填充在这一层 55% 之后才淡入
+                val fillA = ((raw - 0.55f) / 0.45f).coerceIn(0f, 1f)
+                ExplodedPen(this, project, strokeColor, fillColor, slotColor, 1f, fillA, strokePx).apply(layer.draw)
+                // 层名：引线先出，标签后到
+                val leadA = ((raw - 0.7f) / 0.15f).coerceIn(0f, 1f)
+                val labelA = ((raw - 0.85f) / 0.15f).coerceIn(0f, 1f)
+                if (leadA > 0f) {
+                    val anchor = project(layer.anchor.x, layer.anchor.y)
+                    val laid = measurer.measure(layer.label, labelStyle)
+                    val lx = 4.dp.toPx()
+                    val ly = anchor.y - laid.size.height / 2f
+                    val lineStart = Offset(lx + laid.size.width + 6.dp.toPx(), anchor.y)
+                    val lineEnd = Offset(lineStart.x + (anchor.x - 4.dp.toPx() - lineStart.x) * leadA, anchor.y)
+                    drawLine(strokeColor.copy(alpha = .5f * leadA), lineStart, lineEnd, strokeWidth = strokePx)
+                    if (labelA > 0f) drawText(laid, color = labelColor.copy(alpha = labelA), topLeft = Offset(lx, ly))
+                }
+            }
+        }
+        val endA = ((t.value * totalMs - (totalMs - 300f)) / 300f).coerceIn(0f, 1f)
+        Text(
+            "数据只存在这台手机上",
+            style = MaterialTheme.typography.titleMedium,
+            fontWeight = FontWeight.Bold,
+            modifier = Modifier.graphicsLayer { alpha = endA }
+        )
+        Spacer(Modifier.height(4.dp))
+        Text("点图收起 / 展开", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+    }
+}
+
+/** 分层展开的总进度按时间匀速走，每层自己的 ease-in-out 在画的时候算。 */
+private val LinearEasingForTime = androidx.compose.animation.core.LinearEasing
+
+/** 单词卡堆：在当前卡下面露出接下来几张卡的边缘，剩得越多叠得越厚（最多 2 张）。只画卡片下方露出的那一条，玻璃卡不会透出来。 */
+@Composable
+private fun androidx.compose.foundation.layout.BoxScope.WordStackPeek(count: Int) {
+    val shown by animateFloatAsState(count.toFloat(), motion(spring(dampingRatio = 1f, stiffness = 400f)), label = "stack")
+    val ink = MaterialTheme.colorScheme.onSurface
+    Canvas(Modifier.matchParentSize()) {
+        val r = 28.dp.toPx()
+        clipRect(top = size.height - 1f, bottom = size.height + 40.dp.toPx()) {
+            for (i in 1 downTo 0) {
+                val a = (shown - i).coerceIn(0f, 1f)
+                if (a <= 0f) continue
+                val inset = 14.dp.toPx() * (i + 1)
+                val drop = (8 + 6 * i).dp.toPx()
+                drawRoundRect(
+                    color = ink.copy(alpha = (if (i == 0) .10f else .06f) * a),
+                    topLeft = Offset(inset, drop),
+                    size = androidx.compose.ui.geometry.Size(size.width - inset * 2, size.height),
+                    cornerRadius = CornerRadius(r)
+                )
+            }
+        }
     }
 }
 
