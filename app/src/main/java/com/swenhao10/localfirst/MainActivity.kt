@@ -269,6 +269,8 @@ import com.swenhao10.localfirst.autobook.Payment
 import androidx.lifecycle.compose.LifecycleResumeEffect
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import androidx.compose.ui.draw.drawWithContent
+import androidx.compose.ui.zIndex
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.compositionLocalOf
 import androidx.compose.material3.LocalContentColor
@@ -805,6 +807,8 @@ private val LocalGlass = staticCompositionLocalOf { false }
 private val LocalBackdrop = staticCompositionLocalOf<LayerBackdrop?> { null }
 /** 弹窗宿主：ZhAlertDialog 把自己挂到这里，画在主界面最上层。 */
 private val LocalOverlay = staticCompositionLocalOf<androidx.compose.runtime.snapshots.SnapshotStateMap<Any, OverlayEntry>?> { null }
+/** 这个 Tab 是否是当前显示的那个：保活的隐藏 Tab 里的返回键处理要关掉。 */
+private val LocalTabActive = compositionLocalOf { true }
 /** 卡片正在被拖动：GlassCard 临时画半透明实底，不做实时模糊/折射（每帧重算模糊会卡）。 */
 private val LocalGlassCheap = compositionLocalOf { false }
 /** 自定义背景图路径；null = 默认渐变。 */
@@ -1254,7 +1258,6 @@ private fun LocalFirstApp(db: AppDatabase) {
         ) {
         Box(Modifier.fillMaxSize()) {
         if (glassOn) GlassBackground(useDarkTheme, Modifier.layerBackdrop(layerBackdrop))
-        val tabStates = androidx.compose.runtime.saveable.rememberSaveableStateHolder()
         Scaffold(
             containerColor = if (glassOn) Color.Transparent else MaterialTheme.colorScheme.background,
             contentColor = MaterialTheme.colorScheme.onBackground,
@@ -1281,19 +1284,36 @@ private fun LocalFirstApp(db: AppDatabase) {
                 }
             }
         ) { padding ->
-            // Tab 是平级的：淡入 + 从下方 8dp 轻轻落位，不缩放；每个 Tab 的滚动位置和子页面状态切回来还在
-            val tabShift = with(LocalDensity.current) { 8.dp.roundToPx() }
-            AnimatedContent(
-                targetState = tab,
-                transitionSpec = {
-                    if (reduceMotion) fadeIn(tween(Motion.SMALL)) togetherWith fadeOut(tween(90)) using SizeTransform(clip = false)
-                    else (fadeIn(tween(220, easing = Motion.EaseOut)) + slideInVertically(spring(dampingRatio = 1f, stiffness = 500f, visibilityThreshold = IntOffset.VisibilityThreshold)) { tabShift })
-                        .togetherWith(fadeOut(tween(100)))
-                        .using(SizeTransform(clip = false))
-                },
-                label = "tab-transition"
-            ) { selected ->
-                tabStates.SaveableStateProvider(selected.name) {
+            // Tab 保活：去过的 Tab 一直留在组合里（滚动位置、子页面、图片都不重建），切换只在 graphicsLayer 里做 ≤180ms 的透明度交叉淡化。
+            // 看不见的 Tab 不画（drawWithContent 跳过，玻璃模糊也不算），也不接触摸；启动后空闲时把其余 Tab 预先组合好，第一次切也不卡。
+            val visitedTabs = remember { mutableStateListOf(tab) }
+            if (tab !in visitedTabs) visitedTabs.add(tab)
+            LaunchedEffect(Unit) {
+                delay(900)
+                Tab.values().forEach { t ->
+                    if (t !in visitedTabs) { visitedTabs.add(t); delay(120) }
+                }
+            }
+            Box(Modifier.fillMaxSize()) {
+            Tab.values().forEach { selected ->
+                if (selected in visitedTabs) key(selected) {
+                val active = selected == tab
+                val tabAlpha = remember { Animatable(if (active) 1f else 0f) }
+                LaunchedEffect(active) {
+                    val target = if (active) 1f else 0f
+                    if (reduceMotion) tabAlpha.snapTo(target)
+                    else tabAlpha.animateTo(target, tween(if (active) 180 else 120, easing = Motion.EaseOut))
+                }
+                Box(
+                    Modifier
+                        .fillMaxSize()
+                        .zIndex(if (active) 1f else 0f)
+                        .graphicsLayer { alpha = tabAlpha.value }
+                        .drawWithContent { if (tabAlpha.value > 0.003f) drawContent() }
+                        // 当前 Tab 整块都算命中，触摸不会漏到下面看不见的 Tab
+                        .then(if (active) Modifier.pointerInput(Unit) { awaitPointerEventScope { while (true) awaitPointerEvent() } } else Modifier)
+                ) {
+                CompositionLocalProvider(LocalTabActive provides active) {
                 when (selected) {
                     Tab.RECORD -> RecordScreen(
                         records = records,
@@ -1365,6 +1385,9 @@ private fun LocalFirstApp(db: AppDatabase) {
                     ) { message = it }
                 }
                 }
+                }
+                }
+            }
             }
         }
         LaunchedEffect(roundDone) {
@@ -2940,7 +2963,7 @@ private fun WordsScreen(
         }
         val counter = if (isReview) "${study.reviewPos + 1} / ${study.queue.size}" else "${index + 1} / $total"
         // 系统返回 = 点「结束」：本轮记到记录里，回到单词首页，不再直接退出 App
-        BackHandler { finishSession() }
+        BackHandler(enabled = LocalTabActive.current) { finishSession() }
         val frac = if (isReview) (study.reviewPos + 1f) / study.queue.size.coerceAtLeast(1) else if (total == 0) 0f else (index + 1f) / total
 
         Column(modifier.fillMaxSize().padding(horizontal = 20.dp)) {
@@ -3143,7 +3166,7 @@ private fun WordsScreen(
     }
 
     if (showUnknownBook) {
-        BackHandler { showUnknownBook = false }
+        BackHandler(enabled = LocalTabActive.current) { showUnknownBook = false }
         LazyColumn(modifier.fillMaxSize().padding(horizontal = 20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             item {
                 Spacer(Modifier.height(4.dp))
@@ -3948,7 +3971,7 @@ private fun DataScreen(
     var page by rememberSaveable { mutableStateOf("main") }   // main | settings | privacy | about
     var showUpdate by remember { mutableStateOf(false) }
     if (showUpdate) UpdateDialog(onDismiss = { showUpdate = false })
-    if (page != "main") BackHandler { page = "main" }
+    if (page != "main") BackHandler(enabled = LocalTabActive.current) { page = "main" }
     @Composable
     fun SubHeader(title: String, sub: String) {
         Spacer(Modifier.height(4.dp))
