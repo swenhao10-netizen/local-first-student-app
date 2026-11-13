@@ -229,6 +229,7 @@ import com.swenhao10.localfirst.data.ReminderScheduler
 import com.swenhao10.localfirst.data.SettingsStore
 import com.swenhao10.localfirst.data.StudySnapshot
 import com.swenhao10.localfirst.data.ThemeMode
+import com.swenhao10.localfirst.ui.DayNightToggle
 import com.swenhao10.localfirst.data.UnknownWord
 import com.swenhao10.localfirst.data.UnknownWordDao
 import com.swenhao10.localfirst.data.VocabularyCard
@@ -4359,10 +4360,23 @@ private fun DataScreen(
             Spacer(Modifier.height(8.dp))
             GlassCard(color = MaterialTheme.colorScheme.surface, shape = RoundedCornerShape(20.dp)) {
                 Column(Modifier.fillMaxWidth().padding(16.dp)) {
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        ThemeMode.ALL.forEach { mode ->
-                            ChoiceChip(ThemeMode.label(mode), themeMode == mode) { onThemeChange(mode) }
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f)) {
+                            Text(if (darkNow) "黑夜" else "白天", fontWeight = FontWeight.SemiBold)
+                            Text("点开关切换白天和黑夜", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
+                        DayNightToggle(dark = darkNow, onToggle = { toDark -> onThemeChange(if (toDark) ThemeMode.DARK else ThemeMode.LIGHT) })
+                    }
+                    Spacer(Modifier.height(12.dp))
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f)) {
+                            Text("跟随系统", fontWeight = FontWeight.SemiBold)
+                            Text("打开后跟手机的深色模式走", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                        Switch(
+                            checked = themeMode == ThemeMode.SYSTEM,
+                            onCheckedChange = { on -> onThemeChange(if (on) ThemeMode.SYSTEM else if (darkNow) ThemeMode.DARK else ThemeMode.LIGHT) }
+                        )
                     }
                     Spacer(Modifier.height(16.dp))
                     Row(verticalAlignment = Alignment.CenterVertically) {
