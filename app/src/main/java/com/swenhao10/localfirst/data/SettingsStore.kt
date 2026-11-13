@@ -75,9 +75,14 @@ object SettingsStore {
         prefs(context).edit().putString(KEY_THEME_MODE, mode).apply()
     }
 
-    /** 主题颜色，默认绿色（原来的主色）。 */
-    fun getPalette(context: Context): String =
-        prefs(context).getString(KEY_PALETTE, PaletteId.GREEN) ?: PaletteId.GREEN
+    /**
+     * 主题颜色，默认渐变 grad_1。旧版的单色预设（青绿/海蓝/紫罗兰/暖橙/樱粉）已从选择器里去掉，
+     * 存的是这些或认不出的 id 时一律回到默认；自定义单色 / 自定义渐变照旧。
+     */
+    fun getPalette(context: Context): String {
+        val id = prefs(context).getString(KEY_PALETTE, null)
+        return if (id != null && PaletteId.isSelectable(id)) id else PaletteId.DEFAULT
+    }
 
     fun setPalette(context: Context, id: String) {
         prefs(context).edit().putString(KEY_PALETTE, id).apply()
@@ -183,7 +188,7 @@ data class StudySnapshot(
     val inStudy: Boolean = false
 )
 
-/** 主题颜色可选值：绿（默认）/ 蓝 / 紫 / 橙 / 粉。 */
+/** 主题颜色可选值：预设渐变 grad_1..grad_8（默认 grad_1）/ 自定义单色 / 自定义渐变；旧单色 id 仅作兼容。 */
 object PaletteId {
     const val GREEN = "green"
     const val BLUE = "blue"
@@ -194,7 +199,16 @@ object PaletteId {
     /** 自定义渐变；预设渐变的 id 是 "grad_1".."grad_8"。 */
     const val CUSTOM_GRADIENT = "custom_grad"
 
+    /** 旧版单色预设，选择器里已不再提供，读到时回退到 [DEFAULT]。 */
     val ALL = listOf(GREEN, BLUE, PURPLE, ORANGE, PINK)
+
+    /** 预设渐变 id。 */
+    val GRADIENTS = (1..8).map { "grad_$it" }
+
+    /** 新装和旧单色预设用户的默认主题：渐变「这就是我想要的」。 */
+    const val DEFAULT = "grad_1"
+
+    fun isSelectable(id: String): Boolean = id == CUSTOM || id == CUSTOM_GRADIENT || id in GRADIENTS
 
     fun label(id: String): String = when (id) {
         BLUE -> "海蓝"

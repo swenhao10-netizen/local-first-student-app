@@ -205,6 +205,9 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.selected
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -1605,7 +1608,7 @@ private fun LocalFirstApp(db: AppDatabase, launchDone: Boolean = true) {
     var packReady by remember { mutableStateOf(false) }
     // 外观：从 SharedPreferences 读上次选的，重启还生效；跟随系统时读系统当前深浅
     var themeMode by remember { mutableStateOf(SettingsStore.getThemeMode(context)) }
-    // 主题颜色：默认青绿（原来的主色），可换海蓝/紫罗兰/暖橙/樱粉
+    // 主题颜色：默认渐变 grad_1，可换其它渐变预设或自定义单色/渐变
     var paletteId by remember { mutableStateOf(SettingsStore.getPalette(context)) }
     var customColor by remember { mutableStateOf(SettingsStore.getCustomColor(context)) }
     var customGradient by remember { mutableStateOf(SettingsStore.getCustomGradient(context)) }
@@ -3230,66 +3233,64 @@ private fun ChoiceChip(label: String, selected: Boolean, onClick: () -> Unit) {
     }
 }
 
-/** 主题颜色选择：左边一个色点，后面是颜色名，选中态用当前主色填充。 */
+/** 主题色圆形色块：填渐变/纯色，选中时外面一圈描边（弹簧）；不显示文字，名字只给无障碍读屏。 */
 @Composable
-private fun PaletteChip(label: String, dotColor: Color, selected: Boolean, dotBrush: Brush? = null, onClick: () -> Unit) {
-    val src = remember { MutableInteractionSource() }
-    val haptic = LocalHapticFeedback.current
-    val acc = LocalAccent.current
-    val bg by animateColorAsState(if (selected) (if (acc != null) Color.Transparent else MaterialTheme.colorScheme.primary) else MaterialTheme.colorScheme.surfaceVariant, tween(Motion.SMALL), label = "paletteBg")
-    val fg by animateColorAsState(if (selected) onAccentFill() else MaterialTheme.colorScheme.onSurfaceVariant, tween(Motion.SMALL), label = "paletteFg")
-    Surface(
-        onClick = { if (!selected) haptic.performHapticFeedback(HapticFeedbackType.SegmentTick); onClick() },
-        interactionSource = src,
-        modifier = Modifier.pressScale(src).then(if (selected) Modifier.accentFill(RoundedCornerShape(16.dp)) else Modifier),
-        shape = RoundedCornerShape(16.dp),
-        color = bg,
-        contentColor = fg
-    ) {
-        Row(
-            modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Box(Modifier.size(12.dp).then(if (dotBrush != null) Modifier.background(dotBrush, RoundedCornerShape(6.dp)) else Modifier.background(dotColor, RoundedCornerShape(6.dp))))
-            Spacer(Modifier.width(6.dp))
-            Text(label, style = MaterialTheme.typography.labelLarge)
-        }
-    }
-}
-
-/** 渐变主题色色块：圆形填渐变，下面是名字；选中时外面一圈描边（和常用色色块一样的弹簧）。 */
-@Composable
-private fun GradientSwatch(g: GradientPalette, selected: Boolean, onClick: () -> Unit) {
+private fun ThemeCircle(
+    brush: Brush,
+    selected: Boolean,
+    description: String,
+    onClick: () -> Unit,
+    overlay: @Composable () -> Unit = {}
+) {
     val haptic = LocalHapticFeedback.current
     val src = remember { MutableInteractionSource() }
     val ringRaw by animateFloatAsState(if (selected) 1f else 0f, spring(dampingRatio = 0.6f, stiffness = 500f), label = "gradRing")
     val ring = ringRaw.coerceIn(0f, 1f)
     val ringColor = MaterialTheme.colorScheme.onSurface
-    val brush = remember(g) { Brush.linearGradient(listOf(Color(g.start), Color(g.end))) }
-    Column(
-        Modifier.width(84.dp)
+    Box(
+        Modifier.size(46.dp).pressScale(src)
+            .semantics {
+                contentDescription = description
+                this.selected = selected
+            }
             .clickable(interactionSource = src, indication = null) {
                 if (!selected) haptic.performHapticFeedback(HapticFeedbackType.SegmentTick)
                 onClick()
-            },
-        horizontalAlignment = Alignment.CenterHorizontally
-    ) {
-        Box(
-            Modifier.size(46.dp).pressScale(src)
-                .border((2f * ring).dp, ringColor.copy(alpha = .75f * ring), CircleShape)
-                .padding((4f * ring).dp)
-                .clip(CircleShape)
-                .background(brush)
-                .border(1.dp, Color.Black.copy(alpha = .06f), CircleShape)
+            }
+            .border((2f * ring).dp, ringColor.copy(alpha = .75f * ring), CircleShape)
+            .padding((4f * ring).dp)
+            .clip(CircleShape)
+            .background(brush)
+            .border(1.dp, Color.Black.copy(alpha = .06f), CircleShape),
+        contentAlignment = Alignment.Center
+    ) { overlay() }
+}
+
+/** 渐变主题色色块。 */
+@Composable
+private fun GradientSwatch(g: GradientPalette, selected: Boolean, onClick: () -> Unit) {
+    val brush = remember(g) { Brush.linearGradient(listOf(Color(g.start), Color(g.end))) }
+    ThemeCircle(brush, selected, g.label, onClick)
+}
+
+/** 「自定义」色块：没选中时是一圈彩虹，选中后显示自己调的颜色/渐变；中间一个画笔图标，不用文字。 */
+@Composable
+private fun CustomSwatch(customColor: Int, customGradient: Pair<Int, Int>, paletteId: String, onClick: () -> Unit) {
+    val selected = paletteId == PaletteId.CUSTOM || paletteId == PaletteId.CUSTOM_GRADIENT
+    val brush = when (paletteId) {
+        PaletteId.CUSTOM_GRADIENT -> Brush.linearGradient(listOf(Color(customGradient.first), Color(customGradient.second)))
+        PaletteId.CUSTOM -> SolidColor(Color(customColor))
+        else -> Brush.sweepGradient(
+            listOf(
+                Color(0xFFFFC2C2), Color(0xFFFFF1B8), Color(0xFFC8F7C5),
+                Color(0xFFB9E6FF), Color(0xFFD9C8FF), Color(0xFFFFC2C2)
+            )
         )
-        Spacer(Modifier.height(6.dp))
-        Text(
-            g.label,
-            fontSize = 11.sp,
-            maxLines = 1,
-            fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
-            color = if (selected) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant
-        )
+    }
+    val iconTint = if (paletteId == PaletteId.CUSTOM && androidx.core.graphics.ColorUtils.calculateLuminance(customColor) < 0.45) Color.White
+        else Color.Black.copy(alpha = .55f)
+    ThemeCircle(brush, selected, "自定义", onClick) {
+        Icon(Icons.Default.Edit, contentDescription = null, tint = iconTint, modifier = Modifier.size(18.dp))
     }
 }
 
@@ -4371,6 +4372,7 @@ private fun StatTile(value: String, label: String, modifier: Modifier = Modifier
 
 /** 我的：保留现有的数据页（导出本地备份、从备份恢复、隐私说明、离线可用），
  * 下面接设置区：通知设置 / 外观 / 关于。 */
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun DataScreen(
     db: AppDatabase,
@@ -4740,26 +4742,18 @@ private fun DataScreen(
                     Spacer(Modifier.height(16.dp))
                     Text("主题颜色", fontWeight = FontWeight.SemiBold)
                     Spacer(Modifier.height(10.dp))
-                    Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        APP_PALETTES.forEach { palette ->
-                            PaletteChip(
-                                label = palette.label,
-                                dotColor = palette.light.primary,
-                                selected = paletteId == palette.id
-                            ) { onPaletteChange(palette.id) }
-                        }
-                        PaletteChip(
-                            label = "自定义",
-                            dotColor = Color(customColor),
-                            dotBrush = if (paletteId == PaletteId.CUSTOM_GRADIENT) Brush.linearGradient(listOf(Color(customGradient.first), Color(customGradient.second))) else null,
-                            selected = paletteId == PaletteId.CUSTOM || paletteId == PaletteId.CUSTOM_GRADIENT
-                        ) { showColorPicker = true }
-                    }
-                    Spacer(Modifier.height(12.dp))
-                    Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    FlowRow(
+                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                        verticalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
                         GRADIENT_PALETTES.forEach { g ->
                             GradientSwatch(g, selected = paletteId == g.id) { onPaletteChange(g.id) }
                         }
+                        CustomSwatch(
+                            customColor = customColor,
+                            customGradient = customGradient,
+                            paletteId = paletteId
+                        ) { showColorPicker = true }
                     }
                     if (showColorPicker) {
                         CustomColorSheet(
