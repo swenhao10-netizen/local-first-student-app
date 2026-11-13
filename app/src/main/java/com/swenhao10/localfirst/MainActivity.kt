@@ -192,6 +192,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.CornerRadius
@@ -798,9 +799,182 @@ private val APP_PALETTES = listOf(
     AppPalette(PaletteId.PINK, "樱粉", RoseColors, RoseDarkColors)
 )
 
-private fun paletteFor(id: String, dark: Boolean): androidx.compose.material3.ColorScheme {
+private fun paletteFor(id: String, dark: Boolean, customArgb: Int = 0xFF3A7BD5.toInt()): androidx.compose.material3.ColorScheme {
+    if (id == PaletteId.CUSTOM) return customScheme(customArgb, dark)
     val set = APP_PALETTES.firstOrNull { it.id == id } ?: APP_PALETTES.first()
     return if (dark) set.dark else set.light
+}
+
+/** HSL 取色：h 0..360，s/l 0..1。 */
+private fun hsl(h: Float, s: Float, l: Float): Color {
+    val out = FloatArray(3)
+    out[0] = ((h % 360f) + 360f) % 360f; out[1] = s.coerceIn(0f, 1f); out[2] = l.coerceIn(0f, 1f)
+    return Color(androidx.core.graphics.ColorUtils.HSLToColor(out))
+}
+
+/** 用一个种子色生成整套浅色 / 深色 ColorScheme：主色保证对比度，背景和卡片带一点同色调。 */
+private fun customScheme(argb: Int, dark: Boolean): androidx.compose.material3.ColorScheme {
+    val f = FloatArray(3)
+    androidx.core.graphics.ColorUtils.colorToHSL(argb, f)
+    val h = f[0]; val s = f[1]
+    val sat = if (s < 0.06f) s else s.coerceIn(0.35f, 0.85f)
+    val tint = (sat * 0.35f).coerceAtMost(0.25f)
+    val sh = h + 150f
+    return if (!dark) lightColorScheme(
+        primary = hsl(h, sat, f[2].coerceIn(0.30f, 0.45f)),
+        onPrimary = Color.White,
+        primaryContainer = hsl(h, sat * 0.7f, 0.90f),
+        onPrimaryContainer = hsl(h, sat, 0.15f),
+        secondary = hsl(sh, 0.45f, 0.45f),
+        secondaryContainer = hsl(sh, 0.5f, 0.88f),
+        onSecondaryContainer = hsl(sh, 0.5f, 0.15f),
+        tertiary = hsl(h + 60f, 0.4f, 0.42f),
+        tertiaryContainer = hsl(h + 60f, 0.45f, 0.88f),
+        onTertiaryContainer = hsl(h + 60f, 0.45f, 0.15f),
+        background = hsl(h, tint, 0.97f),
+        onBackground = hsl(h, tint, 0.12f),
+        surface = hsl(h, tint, 0.99f),
+        surfaceVariant = hsl(h, tint, 0.92f),
+        onSurface = hsl(h, tint, 0.12f),
+        onSurfaceVariant = hsl(h, tint * 0.8f, 0.38f)
+    ) else darkColorScheme(
+        primary = hsl(h, sat, 0.70f),
+        onPrimary = hsl(h, sat, 0.15f),
+        primaryContainer = hsl(h, sat * 0.7f, 0.22f),
+        onPrimaryContainer = hsl(h, sat * 0.7f, 0.90f),
+        secondary = hsl(sh, 0.45f, 0.68f),
+        secondaryContainer = hsl(sh, 0.4f, 0.20f),
+        onSecondaryContainer = hsl(sh, 0.4f, 0.88f),
+        tertiary = hsl(h + 60f, 0.4f, 0.70f),
+        tertiaryContainer = hsl(h + 60f, 0.35f, 0.22f),
+        onTertiaryContainer = hsl(h + 60f, 0.35f, 0.88f),
+        background = hsl(h, tint, 0.08f),
+        onBackground = hsl(h, tint, 0.92f),
+        surface = hsl(h, tint, 0.11f),
+        surfaceVariant = hsl(h, tint, 0.17f),
+        onSurface = hsl(h, tint, 0.92f),
+        onSurfaceVariant = hsl(h, tint * 0.8f, 0.70f)
+    )
+}
+
+private val CUSTOM_PRESETS = listOf(
+    0xFF3A7BD5, 0xFF0B6B68, 0xFF2E9D5B, 0xFF8BAA2E, 0xFFE0A000, 0xFFE0662D,
+    0xFFD43C3C, 0xFFD6457A, 0xFFA34FC4, 0xFF5B5BD6, 0xFF2AA7C9, 0xFF5E6B73
+).map { it.toInt() }
+
+/** 渐变滑条：轨道是一条渐变，圆形拇指可拖可点，按下时放大。 */
+@Composable
+private fun GradientSlider(value: Float, brush: Brush, thumbColor: Color, onChange: (Float) -> Unit) {
+    var widthPx by remember { mutableStateOf(1f) }
+    var pressed by remember { mutableStateOf(false) }
+    val scale by animateFloatAsState(if (pressed) 1.25f else 1f, spring(dampingRatio = 0.6f, stiffness = 500f), label = "thumb")
+    val haptic = LocalHapticFeedback.current
+    val density = LocalDensity.current
+    Box(
+        Modifier.fillMaxWidth().height(36.dp)
+            .onSizeChanged { widthPx = it.width.toFloat().coerceAtLeast(1f) }
+            .pointerInput(Unit) {
+                awaitEachGesture {
+                    val down = awaitFirstDown()
+                    pressed = true
+                    haptic.performHapticFeedback(HapticFeedbackType.SegmentTick)
+                    onChange((down.position.x / widthPx).coerceIn(0f, 1f))
+                    do {
+                        val ev = awaitPointerEvent()
+                        val c = ev.changes.firstOrNull() ?: break
+                        if (c.pressed) { onChange((c.position.x / widthPx).coerceIn(0f, 1f)); c.consume() }
+                    } while (ev.changes.any { it.pressed })
+                    pressed = false
+                }
+            },
+        contentAlignment = Alignment.CenterStart
+    ) {
+        Box(Modifier.fillMaxWidth().height(14.dp).clip(RoundedCornerShape(50)).background(brush).border(1.dp, Color.White.copy(alpha = .35f), RoundedCornerShape(50)))
+        val thumb = 26.dp
+        val x = with(density) { (value * (widthPx - thumb.toPx()).coerceAtLeast(0f)).toDp() }
+        Box(
+            Modifier.offset(x = x)
+                .size(thumb)
+                .graphicsLayer { scaleX = scale; scaleY = scale }
+                .shadow(4.dp, CircleShape)
+                .clip(CircleShape)
+                .background(Color.White)
+                .padding(4.dp)
+                .clip(CircleShape)
+                .background(thumbColor)
+        )
+    }
+}
+
+/** 自定义主题色面板：磨砂玻璃底部面板里，上面实时预览，中间色相/饱和/亮度三条滑条，下面常用色。 */
+@Composable
+private fun CustomColorSheet(initial: Int, dark: Boolean, onDismiss: () -> Unit, onApply: (Int) -> Unit) {
+    val hsv = remember { FloatArray(3).also { android.graphics.Color.colorToHSV(initial, it) } }
+    var hue by remember { mutableStateOf(hsv[0]) }
+    var sat by remember { mutableStateOf(hsv[1]) }
+    var value by remember { mutableStateOf(hsv[2]) }
+    val argb = android.graphics.Color.HSVToColor(floatArrayOf(hue, sat, value))
+    val scheme = remember(argb, dark) { customScheme(argb, dark) }
+    val p by animateColorAsState(scheme.primary, tween(120), label = "pv")
+    val pc by animateColorAsState(scheme.primaryContainer, tween(120), label = "pcv")
+    val onPc by animateColorAsState(scheme.onPrimaryContainer, tween(120), label = "opcv")
+    ZhAlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("自定义主题色") },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } },
+        confirmButton = { Button(onClick = { onApply(argb) }, colors = ButtonDefaults.buttonColors(containerColor = p, contentColor = scheme.onPrimary)) { Text("用这个颜色") } },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
+                // 预览：模拟一张卡片 + 主按钮 + 标签
+                Column(
+                    Modifier.fillMaxWidth().clip(RoundedCornerShape(22.dp))
+                        .background(Brush.linearGradient(listOf(pc.copy(alpha = .85f), p.copy(alpha = .35f))))
+                        .border(1.dp, Color.White.copy(alpha = .4f), RoundedCornerShape(22.dp))
+                        .padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Box(Modifier.size(34.dp).clip(CircleShape).background(p))
+                        Spacer(Modifier.width(10.dp))
+                        Column(Modifier.weight(1f)) {
+                            Text("今天", fontWeight = FontWeight.Bold, color = onPc)
+                            Text("背了 30 个词 · 记了 3 笔", style = MaterialTheme.typography.labelMedium, color = onPc.copy(alpha = .75f))
+                        }
+                        Text(String.format("#%06X", argb and 0xFFFFFF), style = MaterialTheme.typography.labelLarge, color = onPc)
+                    }
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Box(Modifier.clip(RoundedCornerShape(50)).background(p).padding(horizontal = 16.dp, vertical = 8.dp)) { Text("记一笔", color = scheme.onPrimary, style = MaterialTheme.typography.labelLarge) }
+                        Box(Modifier.clip(RoundedCornerShape(50)).border(1.dp, p, RoundedCornerShape(50)).padding(horizontal = 16.dp, vertical = 8.dp)) { Text("背单词", color = onPc, style = MaterialTheme.typography.labelLarge) }
+                    }
+                }
+                Text("色相", style = MaterialTheme.typography.labelLarge)
+                GradientSlider(hue / 360f, Brush.horizontalGradient((0..6).map { hsl(it * 60f, 1f, 0.5f) }), Color(android.graphics.Color.HSVToColor(floatArrayOf(hue, 1f, 1f)))) { hue = it * 360f }
+                Text("鲜艳度", style = MaterialTheme.typography.labelLarge)
+                GradientSlider(sat, Brush.horizontalGradient(listOf(Color(android.graphics.Color.HSVToColor(floatArrayOf(hue, 0f, value))), Color(android.graphics.Color.HSVToColor(floatArrayOf(hue, 1f, value))))), Color(argb)) { sat = it }
+                Text("明暗", style = MaterialTheme.typography.labelLarge)
+                GradientSlider(value, Brush.horizontalGradient(listOf(Color.Black, Color(android.graphics.Color.HSVToColor(floatArrayOf(hue, sat, 1f))))), Color(argb)) { value = it.coerceAtLeast(0.05f) }
+                Text("常用色", style = MaterialTheme.typography.labelLarge)
+                Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    CUSTOM_PRESETS.forEach { c ->
+                        val selected = (c and 0xFFFFFF) == (argb and 0xFFFFFF)
+                        val ring by animateFloatAsState(if (selected) 1f else 0f, spring(dampingRatio = 0.6f, stiffness = 500f), label = "ring")
+                        val src = remember { MutableInteractionSource() }
+                        Box(
+                            Modifier.size(38.dp).pressScale(src)
+                                .border((2.5f * ring).dp, Color.White.copy(alpha = ring), CircleShape)
+                                .padding((4f * ring).dp)
+                                .clip(CircleShape)
+                                .background(Color(c))
+                                .clickable(interactionSource = src, indication = null) {
+                                    val t = FloatArray(3); android.graphics.Color.colorToHSV(c, t)
+                                    hue = t[0]; sat = t[1]; value = t[2]
+                                }
+                        )
+                    }
+                }
+            }
+        }
+    )
 }
 
 /** 磨砂玻璃主题开关：开着时背景是柔和渐变，卡片、底栏都是半透明的“玻璃”。 */
@@ -1168,6 +1342,7 @@ private fun LocalFirstApp(db: AppDatabase, launchDone: Boolean = true) {
     var themeMode by remember { mutableStateOf(SettingsStore.getThemeMode(context)) }
     // 主题颜色：默认青绿（原来的主色），可换海蓝/紫罗兰/暖橙/樱粉
     var paletteId by remember { mutableStateOf(SettingsStore.getPalette(context)) }
+    var customColor by remember { mutableStateOf(SettingsStore.getCustomColor(context)) }
     // 磨砂玻璃主题：默认开，可在「我的 - 外观」里关
     var glassOn by remember { mutableStateOf(SettingsStore.isGlassEnabled(context)) }
     // 自定义背景图：玻璃模式下铺在最底层
@@ -1255,7 +1430,7 @@ private fun LocalFirstApp(db: AppDatabase, launchDone: Boolean = true) {
         packReady = true
     }
 
-    val baseScheme = paletteFor(paletteId, useDarkTheme)
+    val baseScheme = paletteFor(paletteId, useDarkTheme, customColor)
     MaterialTheme(colorScheme = animateColorScheme(if (glassOn) glassScheme(baseScheme, useDarkTheme) else baseScheme)) {
         val layerBackdrop = rememberLayerBackdrop()
         val overlays = remember { mutableStateMapOf<Any, OverlayEntry>() }
@@ -1387,6 +1562,14 @@ private fun LocalFirstApp(db: AppDatabase, launchDone: Boolean = true) {
                         onPaletteChange = { id ->
                             paletteId = id
                             SettingsStore.setPalette(context, id)
+                        },
+                        customColor = customColor,
+                        darkNow = useDarkTheme,
+                        onCustomColor = { c ->
+                            customColor = c
+                            SettingsStore.setCustomColor(context, c)
+                            paletteId = PaletteId.CUSTOM
+                            SettingsStore.setPalette(context, PaletteId.CUSTOM)
                         },
                         glassOn = glassOn,
                         onGlassChange = { on ->
@@ -3829,6 +4012,9 @@ private fun DataScreen(
     onThemeChange: (String) -> Unit,
     paletteId: String,
     onPaletteChange: (String) -> Unit,
+    customColor: Int,
+    darkNow: Boolean,
+    onCustomColor: (Int) -> Unit,
     glassOn: Boolean,
     onGlassChange: (Boolean) -> Unit,
     hasCustomBg: Boolean,
@@ -3848,6 +4034,7 @@ private fun DataScreen(
     var reminderHour by remember { mutableStateOf(initialHour) }
     var reminderMinute by remember { mutableStateOf(initialMinute) }
     var pendingKind by remember { mutableStateOf<String?>(null) }
+    var showColorPicker by remember { mutableStateOf(false) }
     val saveAllMedia = rememberGallerySaver()
     var showAiExport by remember { mutableStateOf(false) }
     var aiWithMedia by remember { mutableStateOf(true) }
@@ -4168,7 +4355,7 @@ private fun DataScreen(
                     }
                     Spacer(Modifier.height(16.dp))
                     Text("主题颜色", fontWeight = FontWeight.SemiBold)
-                    Text("默认青绿；换一个色，主色、按钮、底部导航跟着变", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text("默认青绿；换一个色，主色、按钮、底部导航跟着变。「自定义」可以调任意颜色", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     Spacer(Modifier.height(10.dp))
                     Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         APP_PALETTES.forEach { palette ->
@@ -4178,6 +4365,19 @@ private fun DataScreen(
                                 selected = paletteId == palette.id
                             ) { onPaletteChange(palette.id) }
                         }
+                        PaletteChip(
+                            label = "自定义",
+                            dotColor = Color(customColor),
+                            selected = paletteId == PaletteId.CUSTOM
+                        ) { showColorPicker = true }
+                    }
+                    if (showColorPicker) {
+                        CustomColorSheet(
+                            initial = customColor,
+                            dark = darkNow,
+                            onDismiss = { showColorPicker = false },
+                            onApply = { c -> onCustomColor(c); showColorPicker = false; onMessage("主题色已换好") }
+                        )
                     }
                 }
             }
