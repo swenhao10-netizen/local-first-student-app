@@ -1,0 +1,26 @@
+{
+  "schema_version": 2,
+  "pack_id": "org.zhixing.java",
+  "name": "Java 源码英语词汇",
+  "language": "en",
+  "level": "Developer",
+  "entry_count": 2000,
+  "version": "2026.11.13",
+  "released_at": "2026-11-13",
+  "license": {
+    "spdx": "GPL-3.0",
+    "url": "https://github.com/runcoding/translate_english/blob/master/LICENSE",
+    "text_ref": "LICENSE.txt"
+  },
+  "source": {
+    "origin": "translate_english",
+    "author": "runcoding",
+    "contact": "https://github.com/runcoding/translate_english",
+    "retrieved_at": "2026-11-13",
+    "note": "按 dubbo、flink、jdk8、rocketmq、spring 源码词频取前 2000 词，去掉虚词、专名和纯缩写；音标与词形变化取自 ECDICT（MIT）"
+  },
+  "checksum": {
+    "sha256_db": "824e0e0164d1028200cf9e26b224409351c3a48db31d8c91ea577687def3e2b5",
+    "sha256_media": null
+  }
+}

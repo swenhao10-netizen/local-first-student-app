@@ -68,3 +68,7 @@ keystore/                debug 签名
 
 - 词库：[ECDICT](https://github.com/skywind3000/ECDICT)（MIT）
 - 液态玻璃：[AndroidLiquidGlass](https://github.com/Kyant0/AndroidLiquidGlass)（Apache 2.0）
+
+## 许可证
+
+知行以 GPL-3.0 开源（见 LICENSE）。内置「Java 源码英语词汇」来自 runcoding/translate_english（GPL-3.0）。
