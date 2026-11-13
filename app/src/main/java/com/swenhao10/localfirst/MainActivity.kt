@@ -230,6 +230,7 @@ import com.swenhao10.localfirst.data.SettingsStore
 import com.swenhao10.localfirst.data.StudySnapshot
 import com.swenhao10.localfirst.data.ThemeMode
 import com.swenhao10.localfirst.ui.DayNightToggle
+import com.swenhao10.localfirst.ui.InfoTip
 import com.swenhao10.localfirst.data.UnknownWord
 import com.swenhao10.localfirst.data.UnknownWordDao
 import com.swenhao10.localfirst.data.VocabularyCard
@@ -291,6 +292,10 @@ import java.io.File
 import java.io.FileOutputStream
 import java.util.Calendar
 import java.util.Locale
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.AutoStories
 
 class MainActivity : ComponentActivity() {
     // 离开 App 时把桌面贴纸板刷新一下
@@ -1219,10 +1224,18 @@ private fun RollingText(
     }
 }
 
-/** 换主题色 / 深浅：每个颜色 300ms 过渡，不整屏闪变。 */
+/**
+ * 换主题色：每个颜色 300ms 过渡。只切深浅（白天/黑夜）时直接换，不做 30 个颜色的逐帧插值——
+ * 那会让整屏连续重组 + 毛玻璃重绘，切换时明显卡顿。
+ */
 @Composable
-private fun animateColorScheme(target: androidx.compose.material3.ColorScheme): androidx.compose.material3.ColorScheme {
-    val spec = tween<Color>(300, easing = Motion.EaseInOut)
+private fun animateColorScheme(target: androidx.compose.material3.ColorScheme, dark: Boolean): androidx.compose.material3.ColorScheme {
+    // [0] = 上次的深浅，[1] = 这个时间点之前一律直接换（防止同一帧里多次重组把 spec 改回过渡）
+    val flip = remember { longArrayOf(if (dark) 1L else 0L, 0L) }
+    val now = System.nanoTime()
+    if (flip[0] != (if (dark) 1L else 0L)) { flip[0] = if (dark) 1L else 0L; flip[1] = now + 200_000_000L }
+    val spec: androidx.compose.animation.core.AnimationSpec<Color> =
+        if (now < flip[1]) androidx.compose.animation.core.snap() else tween(300, easing = Motion.EaseInOut)
     @Composable fun a(c: Color, l: String) = animateColorAsState(c, spec, label = l).value
     return target.copy(
         primary = a(target.primary, "primary"),
@@ -1442,7 +1455,7 @@ private fun LocalFirstApp(db: AppDatabase, launchDone: Boolean = true) {
     }
 
     val baseScheme = paletteFor(paletteId, useDarkTheme, customColor)
-    MaterialTheme(colorScheme = animateColorScheme(if (glassOn) glassScheme(baseScheme, useDarkTheme) else baseScheme)) {
+    MaterialTheme(colorScheme = animateColorScheme(if (glassOn) glassScheme(baseScheme, useDarkTheme) else baseScheme, useDarkTheme)) {
         val layerBackdrop = rememberLayerBackdrop()
         val overlays = remember { mutableStateMapOf<Any, OverlayEntry>() }
         CompositionLocalProvider(
@@ -1764,7 +1777,6 @@ private fun RecordScreen(
     val saveRecordMedia = rememberGallerySaver()
     // 点图片看大图：当前这条的全部图片 + 点的是第几张
     var viewer by remember { mutableStateOf<Pair<List<String>, Int>?>(null) }
-    val dayCount = remember(records) { records.map { dayKey(it.createdAt) }.distinct().size }
     val reduce = LocalReduceMotion.current
     val avatarBitmap = rememberBitmap(avatarPath, 256)
     // 放大镜 = 跳到某一天：日历里只有记过东西的日子能点
@@ -1876,15 +1888,6 @@ private fun RecordScreen(
                 Spacer(Modifier.width(12.dp))
                 Column(Modifier.weight(1f)) {
                     Text(nickname, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold, maxLines = 1)
-                    Row {
-                        val st = MaterialTheme.typography.labelMedium
-                        val c = MaterialTheme.colorScheme.onSurfaceVariant
-                        Text("已记录 ", style = st, color = c)
-                        RollingText("${records.size}", st, c)
-                        Text(" 条 · 第 ", style = st, color = c)
-                        RollingText("$dayCount", st, c)
-                        Text(" 天", style = st, color = c)
-                    }
                 }
                 if (LocalBackdrop.current != null) {
                     GlassButton(onClick = { if (records.isEmpty()) onSearch() else showDatePick = true }, modifier = Modifier.size(46.dp)) {
@@ -2492,8 +2495,6 @@ private fun EmptyRecordState(onAddRecord: () -> Unit) {
         }
         Spacer(Modifier.height(14.dp))
         Text("还没有记录", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-        Spacer(Modifier.height(4.dp))
-        Text("点右上角的 + 发第一条：文字、图片、记账都行", color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.bodyMedium)
         Spacer(Modifier.height(16.dp))
         Button(onClick = onAddRecord) { Text("发第一条") }
     }
@@ -2913,25 +2914,6 @@ private fun AddRecordScreen(
                     }
                 }
 
-                // 第三张卡：单词提示
-                Surface(color = MaterialTheme.colorScheme.surface, shape = RoundedCornerShape(20.dp), modifier = Modifier.fillMaxWidth()) {
-                    Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
-                        Surface(shape = RoundedCornerShape(8.dp), color = MaterialTheme.colorScheme.tertiaryContainer) {
-                            Text(
-                                "词",
-                                style = MaterialTheme.typography.labelMedium,
-                                color = MaterialTheme.colorScheme.onTertiaryContainer,
-                                modifier = Modifier.padding(horizontal = 7.dp, vertical = 3.dp)
-                            )
-                        }
-                        Spacer(Modifier.width(8.dp))
-                        Text(
-                            "背单词会自动记一条，不用手动发",
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            style = MaterialTheme.typography.bodyMedium
-                        )
-                    }
-                }
                 Spacer(Modifier.height(4.dp))
             }
 
@@ -3040,10 +3022,10 @@ private fun WordsScreen(
     val progressDao = remember(db) { db.wordProgress() }
     val dayDao = remember(db) { db.studyDays() }
     val book = PackStore.book(bookId)
-    var showAddCard by remember { mutableStateOf(false) }
     var showBookPicker by remember { mutableStateOf(false) }
     var detailWord by remember { mutableStateOf<PackWordLite?>(null) }
     var showUnknownBook by rememberSaveable { mutableStateOf(false) }
+    var showWordBook by rememberSaveable { mutableStateOf(false) }
     val total = packWords.size
     val wordMap = remember(packWords) { packWords.associateBy { it.headword } }
     val haptic = LocalHapticFeedback.current
@@ -3292,7 +3274,7 @@ private fun WordsScreen(
                                 }
                             } else {
                                 Text(
-                                    "先想一想它的意思\n点「认识」或「不认识」后显示",
+                                    "先想一想它的意思",
                                     style = MaterialTheme.typography.bodyLarge,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                                     textAlign = TextAlign.Center,
@@ -3343,12 +3325,6 @@ private fun WordsScreen(
                         ) { Text("认识", fontWeight = FontWeight.SemiBold) }
                     }
                 }
-                Spacer(Modifier.height(8.dp))
-                Text(
-                    if (study.mode == StudyMode.UNKNOWN) "连续认识 ${WordStudy.UNKNOWN_GRADUATE} 次就移出生词本" else WordStudy.nextHint(progress),
-                    style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    textAlign = TextAlign.Center, modifier = Modifier.fillMaxWidth()
-                )
             } else {
                 // 「下一个 → 完成」在同一个按钮里换字
                 val nextLabel: @Composable () -> Unit = {
@@ -3388,9 +3364,12 @@ private fun WordsScreen(
                 Spacer(Modifier.height(4.dp))
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     IconButton(onClick = { showUnknownBook = false }) { Icon(Icons.Default.ChevronLeft, contentDescription = "返回") }
-                    Column(Modifier.weight(1f)) {
-                        Text("生词本", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
-                        Text("${unknownWords.size} 个 · 连续认识 ${WordStudy.UNKNOWN_GRADUATE} 次自动移出", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text("生词本", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
+                    if (unknownWords.isNotEmpty()) {
+                        Surface(color = MaterialTheme.colorScheme.primary.copy(alpha = .14f), shape = RoundedCornerShape(50)) {
+                            Text("${unknownWords.size}", color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold, modifier = Modifier.padding(horizontal = 10.dp, vertical = 3.dp))
+                        }
+                        Spacer(Modifier.width(8.dp))
                     }
                 }
             }
@@ -3403,7 +3382,7 @@ private fun WordsScreen(
                 ) { Icon(Icons.Default.PlayArrow, null); Spacer(Modifier.width(6.dp)); Text("复习生词本", fontWeight = FontWeight.SemiBold) }
             }
         if (unknownWords.isEmpty()) {
-            item { EmptyCard("生词本是空的", "背词时点「不认识」的词会自动放进来") }
+            item { EmptyCard("生词本是空的") }
         } else {
             items(unknownWords, key = { "unknown-${it.id}" }) { word ->
                 var expanded by remember { mutableStateOf(false) }
@@ -3459,11 +3438,26 @@ private fun WordsScreen(
         return
     }
 
+    if (showWordBook) {
+        BackHandler(enabled = LocalTabActive.current) { showWordBook = false }
+        WordBookPage(
+            title = book.shortName,
+            words = packWords,
+            progressDao = progressDao,
+            modifier = modifier,
+            onBack = { showWordBook = false },
+            onOpen = { detailWord = it.lite() }
+        )
+        detailWord?.let { w ->
+            WordDetailDialog(w, wordMap[w.headword], unknownWords.firstOrNull { it.headword == w.headword }, progressDao, unknownDao, onSpeak = { speak(it) }, onDismiss = { detailWord = null })
+        }
+        return
+    }
+
     LazyColumn(modifier.fillMaxSize().padding(horizontal = 20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         item {
             Spacer(Modifier.height(4.dp))
             Text("背单词", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
-            Text("一词一卡，认识就下一个", color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
         item {
             // 词书卡：书名 / 进度 / 继续学习 · 换词书 · 从头开始
@@ -3475,7 +3469,7 @@ private fun WordsScreen(
                         if (!packReady) "词书加载中…"
                         else if (total == 0) "词书还没准备好"
                         else if (study.index > 0) "上次学到第 ${study.index + 1} 个 / 共 $total 个"
-                        else "共 $total 个词 · 离线可用",
+                        else "共 $total 个词",
                         color = onC
                     )
                     LinearProgressIndicator(
@@ -3518,10 +3512,6 @@ private fun WordsScreen(
                         StatColumn("待复习", "$dueCount", highlight = dueCount > 0)
                         StatColumn("学习天数", "$studyDays 天")
                     }
-                    Text(
-                        "连续 $streak 天 · 已学 $learnedCount 个 · 掌握 $masteredCount 个",
-                        style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
                 }
             }
         }
@@ -3533,13 +3523,7 @@ private fun WordsScreen(
                         Icon(Icons.Default.MenuBook, null, tint = MaterialTheme.colorScheme.primary)
                     }
                     Spacer(Modifier.width(14.dp))
-                    Column(Modifier.weight(1f)) {
-                        Text("生词本", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-                        Text(
-                            if (unknownWords.isEmpty()) "背词时点「不认识」会放进来" else "${unknownWords.size} 个词 · 连续认识 ${WordStudy.UNKNOWN_GRADUATE} 次移出",
-                            style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
+                    Text("生词本", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
                     if (unknownWords.isNotEmpty()) {
                         Surface(color = MaterialTheme.colorScheme.primary.copy(alpha = .14f), shape = RoundedCornerShape(50)) {
                             Text("${unknownWords.size}", color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold, modifier = Modifier.padding(horizontal = 10.dp, vertical = 3.dp))
@@ -3551,32 +3535,23 @@ private fun WordsScreen(
             }
         }
         item {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text("我的卡片", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
-                IconButton(onClick = { showAddCard = true }) { Icon(Icons.Default.Add, contentDescription = "添加卡片") }
-            }
-        }
-        if (cards.isEmpty()) {
-            item { EmptyCard("还没有卡片", "点上面 + 添加第一张卡片") }
-        } else {
-            items(cards, key = { "card-${it.id}" }) { card ->
-                GlassCard(color = MaterialTheme.colorScheme.surface, shape = RoundedCornerShape(18.dp), modifier = rowMotion(reduceMotion)) {
-                    ListItem(
-                        colors = ListItemDefaults.colors(containerColor = Color.Transparent),
-                        trailingContent = {
-                            IconButton(onClick = {
-                                scope.launch {
-                                    withContext(Dispatchers.IO) { cardsDao.delete(card.id) }
-                                    onUndoable("已删除「${card.front}」") { cardsDao.insert(card) }
-                                }
-                            }) {
-                                Icon(Icons.Default.Delete, contentDescription = "删除这张卡片", tint = MaterialTheme.colorScheme.error)
-                            }
-                        },
-                        headlineContent = { Text(card.front, fontWeight = FontWeight.SemiBold) },
-                        supportingContent = { Text(card.back, color = MaterialTheme.colorScheme.onSurfaceVariant) },
-                        leadingContent = { Surface(color = MaterialTheme.colorScheme.secondaryContainer, shape = RoundedCornerShape(12.dp)) { Icon(Icons.Default.MenuBook, null, tint = MaterialTheme.colorScheme.secondary, modifier = Modifier.padding(10.dp)) } }
-                    )
+            // 单词书：当前词书的全部单词，点进去单独一页
+            GlassCard(color = MaterialTheme.colorScheme.surface, shape = RoundedCornerShape(20.dp), onClick = { showWordBook = true }) {
+                Row(Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 16.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Box(Modifier.size(42.dp).clip(RoundedCornerShape(14.dp)).background(MaterialTheme.colorScheme.primary.copy(alpha = .16f)), contentAlignment = Alignment.Center) {
+                        Icon(Icons.Default.AutoStories, null, tint = MaterialTheme.colorScheme.primary)
+                    }
+                    Spacer(Modifier.width(14.dp))
+                    Text("单词书", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                    Spacer(Modifier.width(8.dp))
+                    Text(book.shortName, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, modifier = Modifier.weight(1f))
+                    if (total > 0) {
+                        Surface(color = MaterialTheme.colorScheme.primary.copy(alpha = .14f), shape = RoundedCornerShape(50)) {
+                            Text("%,d".format(total), color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold, modifier = Modifier.padding(horizontal = 10.dp, vertical = 3.dp))
+                        }
+                        Spacer(Modifier.width(4.dp))
+                    }
+                    Icon(Icons.Default.ChevronRight, null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             }
         }
@@ -3637,13 +3612,101 @@ private fun WordsScreen(
     detailWord?.let { w ->
         WordDetailDialog(w, wordMap[w.headword], unknownWords.firstOrNull { it.headword == w.headword }, progressDao, unknownDao, onSpeak = { speak(it) }, onDismiss = { detailWord = null })
     }
-    if (showAddCard) {
-        AddCardDialog(dismiss = { showAddCard = false }) { front, back ->
-            scope.launch {
-                withContext(Dispatchers.IO) { cardsDao.insert(VocabularyCard(front = front, back = back)) }
-                showAddCard = false
-                onMessage("已保存到本机")
+}
+
+/** 单词书：当前词书的全部单词，顶部搜索；学过的打勾，掌握的实心勾。 */
+@Composable
+private fun WordBookPage(
+    title: String,
+    words: List<PackWord>,
+    progressDao: WordProgressDao,
+    modifier: Modifier,
+    onBack: () -> Unit,
+    onOpen: (PackWord) -> Unit
+) {
+    var query by rememberSaveable { mutableStateOf("") }
+    // 学过的词 → stage；进页面读一次
+    val stages by produceState(emptyMap<String, Int>(), progressDao) {
+        value = withContext(Dispatchers.IO) { progressDao.all().associate { it.headword to it.stage } }
+    }
+    val unique = remember(words) { words.distinctBy { it.headword } }
+    val filtered = remember(unique, query) {
+        val q = query.trim()
+        if (q.isEmpty()) unique
+        else {
+            val lower = q.lowercase(Locale.ROOT)
+            val starts = ArrayList<PackWord>()
+            val rest = ArrayList<PackWord>()
+            for (w in unique) {
+                val h = w.headword.lowercase(Locale.ROOT)
+                if (h.startsWith(lower)) starts.add(w)
+                else if (h.contains(lower) || w.meaning.contains(q)) rest.add(w)
             }
+            starts + rest
+        }
+    }
+    val listState = rememberLazyListState()
+    LaunchedEffect(query) { if (listState.firstVisibleItemIndex > 0) listState.scrollToItem(0) }
+    Column(modifier.fillMaxSize().padding(horizontal = 20.dp)) {
+        Spacer(Modifier.height(4.dp))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            IconButton(onClick = onBack) { Icon(Icons.Default.ChevronLeft, contentDescription = "返回") }
+            Text("单词书", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
+            Spacer(Modifier.width(8.dp))
+            Text(title, style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, modifier = Modifier.weight(1f))
+            Surface(color = MaterialTheme.colorScheme.primary.copy(alpha = .14f), shape = RoundedCornerShape(50)) {
+                Text("%,d".format(filtered.size), color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold, modifier = Modifier.padding(horizontal = 10.dp, vertical = 3.dp))
+            }
+        }
+        Spacer(Modifier.height(8.dp))
+        OutlinedTextField(
+            value = query,
+            onValueChange = { query = it.take(40) },
+            singleLine = true,
+            placeholder = { Text("搜索") },
+            leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
+            trailingIcon = {
+                if (query.isNotEmpty()) IconButton(onClick = { query = "" }) { Icon(Icons.Default.Close, contentDescription = "清空") }
+            },
+            shape = RoundedCornerShape(50),
+            modifier = Modifier.fillMaxWidth()
+        )
+        Spacer(Modifier.height(8.dp))
+        LazyColumn(Modifier.fillMaxWidth().weight(1f), state = listState) {
+            items(filtered, key = { it.headword }, contentType = { 0 }) { w ->
+                WordBookRow(w, stages[w.headword], onClick = { onOpen(w) })
+            }
+            item(key = "__bottom") { Spacer(Modifier.height(96.dp)) }
+        }
+    }
+}
+
+@Composable
+private fun WordBookRow(word: PackWord, stage: Int?, onClick: () -> Unit) {
+    val variant = MaterialTheme.colorScheme.onSurfaceVariant
+    Row(
+        Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).clickable(onClick = onClick).padding(horizontal = 8.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Column(Modifier.weight(1f)) {
+            Row(verticalAlignment = Alignment.Bottom) {
+                Text(word.headword, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, maxLines = 1)
+                val ph = word.phonetic
+                if (!ph.isNullOrBlank()) {
+                    Spacer(Modifier.width(8.dp))
+                    Text("/${PackStore.cleanPhonetic(ph)}/", style = MaterialTheme.typography.bodyMedium, color = variant, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                }
+            }
+            Text(word.meaning.replace('\n', ' '), style = MaterialTheme.typography.bodyMedium, color = variant, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        }
+        if (stage != null) {
+            Spacer(Modifier.width(8.dp))
+            Icon(
+                if (stage >= WordStudy.MASTERED_STAGE) Icons.Default.CheckCircle else Icons.Default.Check,
+                contentDescription = if (stage >= WordStudy.MASTERED_STAGE) "已掌握" else "学过",
+                tint = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.size(20.dp)
+            )
         }
     }
 }
@@ -3767,7 +3830,6 @@ private fun OverviewScreen(records: List<RecordEntry>, wordCount: Int, modifier:
         item {
             Spacer(Modifier.height(4.dp))
             Text("总览", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
-            Text("看看这个月都记了什么、花了多少", color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
         item {
             // 本月结余：玻璃主题下是玻璃大卡，关掉玻璃时是主色大卡
@@ -3858,7 +3920,7 @@ private fun OverviewScreen(records: List<RecordEntry>, wordCount: Int, modifier:
                 }
             }
         }
-        item { SectionTitle("每天记了什么", "点一天看当天的记录") }
+        item { SectionTitle("每天记了什么") }
         item {
             GlassCard(color = MaterialTheme.colorScheme.surface, shape = RoundedCornerShape(20.dp)) {
                 Column(Modifier.fillMaxWidth().padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -4090,15 +4152,13 @@ private fun DataScreen(
             title = { Text("导出给 AI") },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text("把记录整理成一份文字，开头带给 AI 的说明。发给任意 AI，它读完就能大致了解你。")
                     Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth().clickable { aiWithMedia = !aiWithMedia }) {
-                        Column(Modifier.weight(1f)) {
+                        Row(Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically) {
                             Text("把照片和视频一起打包", fontWeight = FontWeight.SemiBold)
-                            Text("文字和图片放进一个压缩包，存到「下载/知行」；视频截开头、中间、结尾 3 帧拼成一张图。文字里写明每条记录对应哪张图。", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            InfoTip("记录整理成一份文字，开头带给 AI 的说明，同时复制到剪贴板。打包时文字和图片放进压缩包，存到「下载/知行」，视频截 3 帧拼成一张图。不收 zip 的 AI，解压后把文字和图片一起发。")
                         }
                         Switch(checked = aiWithMedia, onCheckedChange = { aiWithMedia = it })
                     }
-                    Text("压缩包发给能读 zip 的 AI；不收 zip 的，解压后把文字和图片一起发。文字同时复制好了，只想发文字直接粘贴。", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     listOf(7 to "最近 7 天", 30 to "最近 30 天", null to "全部记录").forEach { (d, label) ->
                         OutlinedButton(onClick = { showAiExport = false; exportForAi(d, aiWithMedia) }, enabled = !aiExporting, modifier = Modifier.fillMaxWidth()) { Text(label) }
                     }
@@ -4192,13 +4252,13 @@ private fun DataScreen(
     if (showUpdate) UpdateDialog(onDismiss = { showUpdate = false })
     if (page != "main") BackHandler(enabled = LocalTabActive.current) { page = "main" }
     @Composable
-    fun SubHeader(title: String, sub: String) {
+    fun SubHeader(title: String, sub: String = "") {
         Spacer(Modifier.height(4.dp))
         Row(verticalAlignment = Alignment.CenterVertically) {
             IconButton(onClick = { page = "main" }) { Icon(Icons.Default.ChevronLeft, contentDescription = "返回") }
             Column(Modifier.weight(1f)) {
                 Text(title, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
-                Text(sub, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                if (sub.isNotEmpty()) Text(sub, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
         }
     }
@@ -4216,7 +4276,7 @@ private fun DataScreen(
     ) { pg ->
     when (pg) {
     "settings" -> LazyColumn(modifier.fillMaxSize().padding(horizontal = 20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        item { SubHeader("设置", "头像、通知、外观") }
+        item { SubHeader("设置") }
         item {
             Text("头像和昵称", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
             Spacer(Modifier.height(8.dp))
@@ -4295,12 +4355,9 @@ private fun DataScreen(
             GlassCard(color = MaterialTheme.colorScheme.surface, shape = RoundedCornerShape(20.dp)) {
                 Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        Column(Modifier.weight(1f)) {
+                        Row(Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically) {
                             Text("付款后自动记一笔", fontWeight = FontWeight.SemiBold)
-                            Text(
-                                if (hasAccess) "已开启：会读微信、支付宝、云闪付的付款通知" else "要先在系统里给知行「通知使用权」",
-                                style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
+                            InfoTip("只读微信、支付宝、云闪付的付款通知，取金额和商家。退款、收款、转账、红包不记；聊天和其他 App 的通知不读，什么都不上传。")
                         }
                         if (hasAccess) {
                             Switch(checked = autoOn, onCheckedChange = { autoOn = it; AutoBook.setEnabled(ctx, it) })
@@ -4311,8 +4368,9 @@ private fun DataScreen(
                     if (hasAccess) {
                         HorizontalDivider()
                         Row(verticalAlignment = Alignment.CenterVertically) {
-                            Column(Modifier.weight(1f)) {
+                            Row(Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically) {
                                 Text("入账前先问我", fontWeight = FontWeight.SemiBold)
+                                InfoTip("打开：付款后弹一条通知，点「入账」才记，也能换分类或忽略。关掉：直接记一笔。")
                             }
                             Switch(checked = askFirst, onCheckedChange = { askFirst = it; AutoBook.setAskFirst(ctx, it) })
                         }
@@ -4320,15 +4378,14 @@ private fun DataScreen(
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Column(Modifier.weight(1f)) {
                                 Text("允许后台运行", fontWeight = FontWeight.SemiBold)
-                                Text(if (bgOk) "已允许：关掉知行也能记" else "没允许的话，关掉知行后系统会停掉记账", style = MaterialTheme.typography.labelMedium, color = if (bgOk) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.error)
                             }
+                            if (bgOk) Icon(Icons.Default.Check, contentDescription = "已允许", tint = MaterialTheme.colorScheme.primary, modifier = Modifier.padding(end = 12.dp).size(20.dp))
                             if (!bgOk) TextButton(onClick = { runCatching { ctx.startActivity(AutoBook.batteryOptIntent(ctx)) }.onFailure { runCatching { ctx.startActivity(AutoBook.appDetailsIntent(ctx)) } } }) { Text("去允许") }
                         }
                         HorizontalDivider()
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Column(Modifier.weight(1f)) {
                                 Text("自启动和后台耗电", fontWeight = FontWeight.SemiBold)
-                                Text("OPPO：应用详情 → 耗电管理，打开「允许自启动」和「允许后台行为」", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                             }
                             TextButton(onClick = { runCatching { ctx.startActivity(AutoBook.appDetailsIntent(ctx)) } }) { Text("去设置") }
                         }
@@ -4410,7 +4467,7 @@ private fun DataScreen(
         item { Spacer(Modifier.height(88.dp)) }
     }
     "board" -> Column(modifier.fillMaxSize().padding(horizontal = 16.dp)) {
-        SubHeader("贴纸板", "拖动摆放，两指缩放旋转；桌面可以加贴纸板小组件")
+        SubHeader("贴纸板")
         Spacer(Modifier.height(8.dp))
         StickerBoardEditor(db, onMessage, Modifier.fillMaxWidth().weight(1f).padding(bottom = 96.dp))
     }
@@ -4421,17 +4478,10 @@ private fun DataScreen(
                 ExplodedRecordShowcase(Modifier.fillMaxWidth().padding(vertical = 18.dp, horizontal = 8.dp))
             }
         }
-        item {
-            Text(
-                "一条记录由这几层组成：文字、金额、图片和时间都存在知行自己的文件夹里，平时不联网，不上传。",
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-        }
         item { Spacer(Modifier.height(88.dp)) }
     }
     "privacy" -> LazyColumn(modifier.fillMaxSize().padding(horizontal = 20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        item { SubHeader("隐私说明", "你的记录只属于你") }
+        item { SubHeader("隐私说明") }
         val points = listOf(
             Triple(Icons.Default.CloudOff, "平时不联网", "记录、单词、账目、照片和视频都只存在这台手机里，不会上传。只有你点「检查更新」时才联网，只下载版本信息和安装包，不发送你的任何数据。"),
             Triple(Icons.Default.PhotoCamera, "用到的权限", "相机：拍照和录像；通知：每日提醒，可随时关；通知使用权：自动记账读付款通知，只看微信、支付宝、云闪付；网络和安装应用：只给「检查更新」用；存储：只在 Android 9 及以下存相册时用。"),
@@ -4472,16 +4522,11 @@ private fun DataScreen(
             }
         }
         item {
-            GlassCard(color = MaterialTheme.colorScheme.surface, shape = RoundedCornerShape(20.dp)) {
-                Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    Row(verticalAlignment = Alignment.CenterVertically) { Icon(Icons.Default.CloudOff, null, tint = MaterialTheme.colorScheme.primary); Spacer(Modifier.width(8.dp)); Text("离线可用", fontWeight = FontWeight.Bold) }
-                    Text("记录、单词、账目都保存在这台手机。离开知行会自动备份到「文档/知行」，换机时把那个文件拷过去恢复。", color = MaterialTheme.colorScheme.onSurfaceVariant)
-                }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("备份与恢复", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                InfoTip("记录、单词、账目都只存在这台手机。照片和视频在知行里另存了一份，相册里删了也不影响；卸载或换机前，先导出备份，再把照片和视频存到相册。")
             }
-        }
-        item {
-            Text("备份与恢复", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-            Spacer(Modifier.height(8.dp))
+            Spacer(Modifier.height(4.dp))
             Button(onClick = { export.launch("zhixing-backup.json") }, modifier = Modifier.fillMaxWidth()) { Text("导出本地备份") }
             OutlinedButton(onClick = { import.launch(arrayOf("application/zip", "application/json", "text/plain", "application/octet-stream")) }, modifier = Modifier.fillMaxWidth()) { Text("从备份恢复") }
             if (com.swenhao10.localfirst.data.AutoBackup.supported()) {
@@ -4489,11 +4534,11 @@ private fun DataScreen(
                 var lastBackup by remember { mutableStateOf(com.swenhao10.localfirst.data.AutoBackup.lastAt(context)) }
                 Spacer(Modifier.height(4.dp))
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Column(Modifier.weight(1f)) {
+                    Row(Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically) {
                         Text("自动备份", fontWeight = FontWeight.SemiBold)
-                        Text(
-                            if (lastBackup > 0) "上次 ${SimpleDateFormat("M月d日 HH:mm", Locale.CHINA).format(Date(lastBackup))} · 存在${com.swenhao10.localfirst.data.AutoBackup.locationLabel()}，留最近 3 份" else "离开知行时自动备份到${com.swenhao10.localfirst.data.AutoBackup.locationLabel()}，留最近 3 份",
-                            style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant
+                        InfoTip(
+                            (if (lastBackup > 0) "上次 ${SimpleDateFormat("M月d日 HH:mm", Locale.CHINA).format(Date(lastBackup))}\n" else "") +
+                                "离开知行时自动备份到${com.swenhao10.localfirst.data.AutoBackup.locationLabel()}，留最近 3 份；换机时把那个文件拷过去恢复。"
                         )
                     }
                     TextButton(onClick = {
@@ -4516,24 +4561,19 @@ private fun DataScreen(
                 modifier = Modifier.fillMaxWidth()
             ) { Text("照片和视频全部存到相册") }
             OutlinedButton(onClick = { showAiExport = true }, modifier = Modifier.fillMaxWidth()) { Text("导出给 AI，让它了解我") }
-            Text(
-                "记录里的照片和视频都另存了一份在知行里，相册里删了也不影响。卸载或换机前点上面这个，会存一份到相册「知行」。",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
         }
         item {
             GlassCard(color = MaterialTheme.colorScheme.surface, shape = RoundedCornerShape(20.dp)) {
                 Column(Modifier.fillMaxWidth()) {
-                    MineRow(Icons.Default.Image, "贴纸板", "把记录的照片和小便签贴在夹板上，桌面也能看") { page = "board" }
+                    MineRow(Icons.Default.Image, "贴纸板") { page = "board" }
                     HorizontalDivider(Modifier.padding(start = 70.dp), color = MaterialTheme.colorScheme.onSurface.copy(alpha = .08f))
-                    MineRow(Icons.Default.Settings, "设置", "头像和昵称、通知、主题和外观") { page = "settings" }
+                    MineRow(Icons.Default.Settings, "设置") { page = "settings" }
                     HorizontalDivider(Modifier.padding(start = 70.dp), color = MaterialTheme.colorScheme.onSurface.copy(alpha = .08f))
-                    MineRow(Icons.Default.Lock, "隐私说明", "平时不联网，记录只存在这台手机") { page = "privacy" }
+                    MineRow(Icons.Default.Lock, "隐私说明") { page = "privacy" }
                     HorizontalDivider(Modifier.padding(start = 70.dp), color = MaterialTheme.colorScheme.onSurface.copy(alpha = .08f))
-                    MineRow(Icons.Default.Download, "检查更新", "当前 v$versionName，点了才联网") { showUpdate = true }
+                    MineRow(Icons.Default.Download, "检查更新") { showUpdate = true }
                     HorizontalDivider(Modifier.padding(start = 70.dp), color = MaterialTheme.colorScheme.onSurface.copy(alpha = .08f))
-                    MineRow(Icons.Default.Info, "关于知行", "一条记录是怎么存的") { page = "about" }
+                    MineRow(Icons.Default.Info, "关于知行") { page = "about" }
                 }
             }
         }
@@ -4547,7 +4587,6 @@ private fun DataScreen(
                 Surface(color = MaterialTheme.colorScheme.onSurface.copy(alpha = .08f), shape = RoundedCornerShape(50)) {
                     Text("v$versionName", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(horizontal = 10.dp, vertical = 3.dp))
                 }
-                Text("记下今天的每一件小事", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
         }
         item { Spacer(Modifier.height(88.dp)) }
@@ -4718,7 +4757,7 @@ private fun androidx.compose.foundation.layout.BoxScope.WordStackPeek(count: Int
 
 /** 「我的」页里的一行入口：图标 + 标题 + 说明 + 右箭头。 */
 @Composable
-private fun MineRow(icon: ImageVector, title: String, sub: String, onClick: () -> Unit) {
+private fun MineRow(icon: ImageVector, title: String, sub: String = "", onClick: () -> Unit) {
     // 整行只缩到 0.985，避免整行抖动
     val src = remember { MutableInteractionSource() }
     Row(
@@ -4733,7 +4772,7 @@ private fun MineRow(icon: ImageVector, title: String, sub: String, onClick: () -
         Spacer(Modifier.width(14.dp))
         Column(Modifier.weight(1f)) {
             Text(title, fontWeight = FontWeight.SemiBold)
-            Text(sub, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            if (sub.isNotEmpty()) Text(sub, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
         Icon(Icons.Default.ChevronRight, null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
     }
@@ -4758,17 +4797,17 @@ private fun AddCardDialog(dismiss: () -> Unit, save: (String, String) -> Unit) {
 }
 
 @Composable
-private fun SectionTitle(title: String, subtitle: String) {
+private fun SectionTitle(title: String, subtitle: String = "") {
     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.Bottom) {
         Text(title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
-        Text(subtitle, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        if (subtitle.isNotEmpty()) Text(subtitle, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
 }
 
 @Composable
-private fun EmptyCard(title: String, subtitle: String) {
+private fun EmptyCard(title: String, subtitle: String = "") {
     GlassCard(color = MaterialTheme.colorScheme.surfaceVariant, shape = RoundedCornerShape(18.dp)) {
-        Column(Modifier.fillMaxWidth().padding(20.dp)) { Text(title, fontWeight = FontWeight.SemiBold); Text(subtitle, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+        Column(Modifier.fillMaxWidth().padding(20.dp)) { Text(title, fontWeight = FontWeight.SemiBold); if (subtitle.isNotEmpty()) Text(subtitle, color = MaterialTheme.colorScheme.onSurfaceVariant) }
     }
 }
 
@@ -5041,7 +5080,7 @@ private fun UpdateDialog(onDismiss: () -> Unit) {
                     "found" -> Text(i?.notes?.ifBlank { "修复和改进" } ?: "", style = MaterialTheme.typography.bodyMedium)
                     "downloading" -> {
                         LinearProgressIndicator(progress = { progress }, modifier = Modifier.fillMaxWidth())
-                        Text("${(progress * 100).toInt()}%，GitHub 不通会自动换加速线路", style = MaterialTheme.typography.labelMedium)
+                        Text("${(progress * 100).toInt()}%", style = MaterialTheme.typography.labelMedium)
                     }
                     "needPerm" -> Text("在系统设置里允许「知行」安装应用，回来再点「安装」。")
                     else -> Text("$error。可能是网络连不上 GitHub 和加速线路，稍后再试，或者直接装我发你的安装包。")
@@ -5154,7 +5193,6 @@ private fun StickerBoardEditor(db: AppDatabase, onMessage: (String) -> Unit, mod
                 if (board.stickers.isEmpty()) {
                     Column(Modifier.align(Alignment.Center).padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally) {
                         Text("还没有贴纸", fontWeight = FontWeight.Bold, color = Color.White)
-                        Text("点下面「照片」或「便签」贴一张", style = MaterialTheme.typography.labelMedium, color = Color.White.copy(alpha = .85f))
                     }
                 }
                 board.stickers.forEach { s ->
@@ -5314,7 +5352,7 @@ private fun StickerBoardEditor(db: AppDatabase, onMessage: (String) -> Unit, mod
                 val list = paths
                 when {
                     list == null -> Text("正在读取…")
-                    list.isEmpty() -> Text("记录里还没有照片。先去「记录」拍一张或从相册选一张吧。")
+                    list.isEmpty() -> Text("记录里还没有照片")
                     else -> FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         list.forEach { p ->
                             val thumb by produceState<androidx.compose.ui.graphics.ImageBitmap?>(null, p) {
