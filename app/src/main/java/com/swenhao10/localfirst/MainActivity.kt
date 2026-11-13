@@ -3290,7 +3290,6 @@ private fun WordsScreen(
                                 if (forms.isNotEmpty()) {
                                     Text(forms.joinToString(" · ") { it.second }, style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant, textAlign = TextAlign.Center)
                                 }
-                                Text("点卡片看详情", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                             } else {
                                 Text(
                                     "先想一想它的意思\n点「认识」或「不认识」后显示",
@@ -3471,7 +3470,7 @@ private fun WordsScreen(
             GlassCard(color = MaterialTheme.colorScheme.primaryContainer, shape = RoundedCornerShape(24.dp)) {
                 Column(Modifier.fillMaxWidth().padding(20.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     val onC = MaterialTheme.colorScheme.onPrimaryContainer
-                    Text(book.fullName + if (book.id == "dev") "" else "（ECDICT）", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, color = onC)
+                    Text(book.fullName + if (book.id == "dev" || book.id == "java") "" else "（ECDICT）", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, color = onC)
                     Text(
                         if (!packReady) "词书加载中…"
                         else if (total == 0) "词书还没准备好"
@@ -3556,7 +3555,6 @@ private fun WordsScreen(
                 Text("我的卡片", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
                 IconButton(onClick = { showAddCard = true }) { Icon(Icons.Default.Add, contentDescription = "添加卡片") }
             }
-            Text("自己加的词，不走词书", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
         if (cards.isEmpty()) {
             item { EmptyCard("还没有卡片", "点上面 + 添加第一张卡片") }
@@ -3591,7 +3589,6 @@ private fun WordsScreen(
             title = { Text("换词书") },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    Text("每本书各记各的进度，复习和生词本不分书。", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     PackStore.BOOKS.chunked(2).forEach { pair ->
                         Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                             pair.forEach { b ->
@@ -3631,7 +3628,6 @@ private fun WordsScreen(
                             if (pair.size == 1) Spacer(Modifier.weight(1f))
                         }
                     }
-                    Text("专四、专八暂时没有可用的开源词表", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             },
             confirmButton = {},
@@ -3727,7 +3723,6 @@ private fun WordDetailDialog(
                         drawStopIndicator = {}
                     )
                 }
-                Text("例句、词根词缀、真题例句：词书里暂时没有这些数据。", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
         },
         confirmButton = {
@@ -4239,7 +4234,6 @@ private fun DataScreen(
                         Spacer(Modifier.width(12.dp))
                         Column(Modifier.weight(1f)) {
                             Text("头像", fontWeight = FontWeight.SemiBold)
-                            Text("只用本机图片，不上传", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
                         TextButton(onClick = onChangeAvatar) { Text("换头像") }
                     }
@@ -4262,7 +4256,6 @@ private fun DataScreen(
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Column(Modifier.weight(1f)) {
                             Text("背单词复习提醒", fontWeight = FontWeight.SemiBold)
-                            Text("每天到点提醒你复习单词", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
                         Switch(checked = reviewEnabled, onCheckedChange = { setReminder(ReminderScheduler.KIND_REVIEW, it) })
                     }
@@ -4270,7 +4263,6 @@ private fun DataScreen(
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Column(Modifier.weight(1f)) {
                             Text("记账提醒", fontWeight = FontWeight.SemiBold)
-                            Text("每天到点提醒你记一笔账", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
                         Switch(checked = expenseEnabled, onCheckedChange = { setReminder(ReminderScheduler.KIND_EXPENSE, it) })
                     }
@@ -4278,7 +4270,6 @@ private fun DataScreen(
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Column(Modifier.weight(1f)) {
                             Text("提醒时间", fontWeight = FontWeight.SemiBold)
-                            Text("两个提醒用同一个时间", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
                         Text(timeText(), fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
                         Spacer(Modifier.width(4.dp))
@@ -4322,7 +4313,6 @@ private fun DataScreen(
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Column(Modifier.weight(1f)) {
                                 Text("入账前先问我", fontWeight = FontWeight.SemiBold)
-                                Text(if (askFirst) "弹通知让你点「入账」，ColorOS 16 上进流体云" else "直接记入，通知里可以撤销", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                             }
                             Switch(checked = askFirst, onCheckedChange = { askFirst = it; AutoBook.setAskFirst(ctx, it) })
                         }
@@ -4346,12 +4336,10 @@ private fun DataScreen(
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Column(Modifier.weight(1f)) {
                                 Text("试一下", fontWeight = FontWeight.SemiBold)
-                                Text("发一条示例通知，不会真的记账", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                             }
                             TextButton(onClick = { AutoBook.prompt(ctx, Payment(3650, "示例商家", "微信支付", "餐饮"), demo = true) }) { Text("试一下") }
                         }
                     }
-                    Text("只在本机识别，不联网；退款、收款、红包、转账不记。被系统停掉过的话，下次连上时会补记通知栏里 30 分钟内的付款。", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             }
         }
@@ -4363,7 +4351,6 @@ private fun DataScreen(
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Column(Modifier.weight(1f)) {
                             Text(if (darkNow) "黑夜" else "白天", fontWeight = FontWeight.SemiBold)
-                            Text("点开关切换白天和黑夜", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
                         DayNightToggle(dark = darkNow, onToggle = { toDark -> onThemeChange(if (toDark) ThemeMode.DARK else ThemeMode.LIGHT) })
                     }
@@ -4371,7 +4358,6 @@ private fun DataScreen(
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Column(Modifier.weight(1f)) {
                             Text("跟随系统", fontWeight = FontWeight.SemiBold)
-                            Text("打开后跟手机的深色模式走", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
                         Switch(
                             checked = themeMode == ThemeMode.SYSTEM,
@@ -4382,7 +4368,6 @@ private fun DataScreen(
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Column(Modifier.weight(1f)) {
                             Text("磨砂玻璃", fontWeight = FontWeight.SemiBold)
-                            Text("渐变背景 + 半透明卡片和底栏", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
                         Switch(checked = glassOn, onCheckedChange = onGlassChange)
                     }
@@ -4390,14 +4375,12 @@ private fun DataScreen(
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Column(Modifier.weight(1f)) {
                             Text("自定义背景", fontWeight = FontWeight.SemiBold)
-                            Text(if (hasCustomBg) "正在用你选的图" else "默认渐变；选一张自己的图（会打开磨砂玻璃）", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
                         if (hasCustomBg) TextButton(onClick = onResetBg) { Text("恢复默认") }
                         TextButton(onClick = onPickBg) { Text("换图片") }
                     }
                     Spacer(Modifier.height(16.dp))
                     Text("主题颜色", fontWeight = FontWeight.SemiBold)
-                    Text("默认青绿；换一个色，主色、按钮、底部导航跟着变。「自定义」可以调任意颜色", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     Spacer(Modifier.height(10.dp))
                     Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         APP_PALETTES.forEach { palette ->
@@ -4485,7 +4468,6 @@ private fun DataScreen(
                 Spacer(Modifier.width(14.dp))
                 Column(Modifier.weight(1f)) {
                     Text(nickname, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
-                    Text("数据只在这台手机", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             }
         }
@@ -4704,8 +4686,6 @@ private fun ExplodedRecordShowcase(modifier: Modifier = Modifier) {
             fontWeight = FontWeight.Bold,
             modifier = Modifier.graphicsLayer { alpha = endA }
         )
-        Spacer(Modifier.height(4.dp))
-        Text("点图收起 / 展开", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
 }
 
