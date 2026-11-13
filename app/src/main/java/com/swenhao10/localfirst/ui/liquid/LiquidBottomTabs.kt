@@ -27,6 +27,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.BlendMode
+import androidx.compose.ui.draw.drawWithContent
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ColorFilter
 import androidx.compose.ui.graphics.graphicsLayer
@@ -64,6 +66,7 @@ fun LiquidBottomTabs(
     tabsCount: Int,
     modifier: Modifier = Modifier,
     accentColor: Color = Color(0xFF0088FF),
+    accentBrush: Brush? = null,
     isLightTheme: Boolean = !isSystemInDarkTheme(),
     content: @Composable RowScope.() -> Unit
 ) {
@@ -222,7 +225,15 @@ fun LiquidBottomTabs(
                     .height(56f.dp)
                     .fillMaxWidth()
                     .padding(horizontal = 4f.dp)
-                    .graphicsLayer(colorFilter = ColorFilter.tint(accentColor)),
+                    .then(
+                        if (accentBrush == null) Modifier.graphicsLayer(colorFilter = ColorFilter.tint(accentColor))
+                        else Modifier
+                            .graphicsLayer(compositingStrategy = androidx.compose.ui.graphics.CompositingStrategy.Offscreen)
+                            .drawWithContent {
+                                drawContent()
+                                drawRect(accentBrush, blendMode = BlendMode.SrcIn)
+                            }
+                    ),
                 verticalAlignment = Alignment.CenterVertically,
                 content = content
             )

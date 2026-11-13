@@ -876,6 +876,171 @@ private val CUSTOM_PRESETS = listOf(
     0xFFD43C3C, 0xFFD6457A, 0xFFA34FC4, 0xFF5B5BD6, 0xFF2AA7C9, 0xFF5E6B73
 ).map { it.toInt() }
 
+/** 渐变主题色：名字 + 起点 / 终点（都是很浅的粉彩色）。 */
+private data class GradientPalette(val id: String, val label: String, val start: Int, val end: Int)
+
+private val GRADIENT_PALETTES = listOf(
+    GradientPalette("grad_1", "这就是我想要的", 0xFFDDFFC2.toInt(), 0xFFEEE1FF.toInt()),
+    GradientPalette("grad_2", "一眼心动", 0xFFFFEAE1.toInt(), 0xFFB6FAFF.toInt()),
+    GradientPalette("grad_3", "美好从审美开始", 0xFFCFFFBD.toInt(), 0xFFB9DFFF.toInt()),
+    GradientPalette("grad_4", "梦境粉色泡泡", 0xFFDBDDFF.toInt(), 0xFFFFD0D0.toInt()),
+    GradientPalette("grad_5", "所有的美好给你", 0xFFACFFF1.toInt(), 0xFFFFDCDC.toInt()),
+    GradientPalette("grad_6", "这配色太上头", 0xFFFFFFD0.toInt(), 0xFFD8EFFF.toInt()),
+    GradientPalette("grad_7", "粉末天青", 0xFFD89CA6.toInt(), 0xFFFFC5CE.toInt()),
+    GradientPalette("grad_8", "黄紫迷人眼", 0xFFFFFFD0.toInt(), 0xFFD2CDFF.toInt())
+)
+
+/** 当前主题是渐变时返回 (起点, 终点)，单色主题返回 null。 */
+private fun gradientOf(id: String, custom: Pair<Int, Int>): Pair<Int, Int>? {
+    if (id == PaletteId.CUSTOM_GRADIENT) return custom
+    return GRADIENT_PALETTES.firstOrNull { it.id == id }?.let { it.start to it.end }
+}
+
+private fun hslOf(argb: Int): FloatArray = FloatArray(3).also { androidx.core.graphics.ColorUtils.colorToHSL(argb, it) }
+
+/**
+ * 渐变主题生成 ColorScheme 用的种子：默认起点色；起点是黄色系（压暗后发脏）或几乎没颜色时换终点色。
+ * 种子只决定整套 Material 配色，强调处的渐变另外画。
+ */
+private fun gradientSeed(start: Int, end: Int): Int {
+    val a = hslOf(start); val b = hslOf(end)
+    val aYellow = a[0] in 40f..80f
+    val bYellow = b[0] in 40f..80f
+    return when {
+        a[1] < 0.08f && b[1] >= 0.08f -> end
+        aYellow && !bYellow -> end
+        else -> start
+    }
+}
+
+/**
+ * 渐变强调色。a/b：画在背景上的文字、图标、进度条（白天压深加饱和，黑夜直接用粉彩稍提亮）；
+ * fillA/fillB：填充块（按钮、选中、日历选中格）用原粉彩色，上面的字用深色 onFill；
+ * onStrong：画在 a/b 填充上的字（白天白、黑夜深色）。
+ */
+@androidx.compose.runtime.Immutable
+private class AccentGradient(val a: Color, val b: Color, val fillA: Color, val fillB: Color, val onFill: Color, val onStrong: Color) {
+    val brush: Brush = Brush.linearGradient(listOf(a, b))
+    val horizontal: Brush = Brush.horizontalGradient(listOf(a, b))
+    val fill: Brush = Brush.linearGradient(listOf(fillA, fillB))
+    val fillHorizontal: Brush = Brush.horizontalGradient(listOf(fillA, fillB))
+}
+
+private fun accentFor(start: Int, end: Int, dark: Boolean): AccentGradient {
+    fun deep(c: Int): Color {
+        val f = hslOf(c)
+        val s = if (f[1] < 0.06f) f[1] else f[1].coerceIn(0.55f, 0.85f)
+        var l = 0.52f
+        // 往下压到在浅色背景上看得清（相对亮度 ≤ 0.18，约等于和白底 4:1）
+        while (l > 0.22f && androidx.core.graphics.ColorUtils.calculateLuminance(androidx.core.graphics.ColorUtils.HSLToColor(floatArrayOf(f[0], s, l))) > 0.18) l -= 0.02f
+        return hsl(f[0], s, l)
+    }
+    fun glow(c: Int): Color {
+        val f = hslOf(c)
+        return hsl(f[0], (f[1] * 1.05f).coerceAtMost(1f), (f[2] + 0.03f).coerceIn(0.72f, 0.92f))
+    }
+    val seedHue = hslOf(gradientSeed(start, end))[0]
+    val onFill = hsl(seedHue, 0.30f, 0.15f)
+    return if (dark) AccentGradient(glow(start), glow(end), Color(start), Color(end), onFill, onFill)
+    else AccentGradient(deep(start), deep(end), Color(start), Color(end), onFill, Color.White)
+}
+
+/** 当前渐变强调色；null = 单色主题，一切照旧。 */
+private val LocalAccent = staticCompositionLocalOf<AccentGradient?> { null }
+
+/** 大标题：渐变主题下文字用渐变画。 */
+@Composable
+private fun accentTitle(base: androidx.compose.ui.text.TextStyle): androidx.compose.ui.text.TextStyle {
+    val acc = LocalAccent.current ?: return base
+    return base.merge(androidx.compose.ui.text.TextStyle(brush = acc.horizontal))
+}
+
+/** 主色填充块上的文字颜色。 */
+@Composable
+private fun onAccentFill(): Color = LocalAccent.current?.onFill ?: MaterialTheme.colorScheme.onPrimary
+
+/** 主按钮配色：渐变主题下容器透明（底下由 accentFill 画渐变），字用深色。 */
+@Composable
+private fun accentButtonColors(): androidx.compose.material3.ButtonColors {
+    val acc = LocalAccent.current
+    return if (acc == null) ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
+    else ButtonDefaults.buttonColors(containerColor = Color.Transparent, contentColor = acc.onFill)
+}
+
+/** 渐变主题下在 shape 里铺粉彩渐变；单色主题什么都不做。 */
+@Composable
+private fun Modifier.accentFill(shape: androidx.compose.ui.graphics.Shape): Modifier {
+    val acc = LocalAccent.current ?: return this
+    return this.clip(shape).background(acc.fill, shape)
+}
+
+/** 把内容（图标、文字）的颜色换成渐变：离屏层 + SrcIn。 */
+private fun Modifier.brushTint(brush: Brush?): Modifier =
+    if (brush == null) this
+    else this.graphicsLayer(compositingStrategy = androidx.compose.ui.graphics.CompositingStrategy.Offscreen)
+        .drawWithContent { drawContent(); drawRect(brush, blendMode = androidx.compose.ui.graphics.BlendMode.SrcIn) }
+
+/** 进度条：单色主题原样用 LinearProgressIndicator，渐变主题画一条渐变。 */
+@Composable
+private fun AccentProgress(
+    progress: () -> Float,
+    modifier: Modifier,
+    color: Color = MaterialTheme.colorScheme.primary,
+    trackColor: Color = MaterialTheme.colorScheme.surfaceVariant,
+    keepStop: Boolean = false
+) {
+    val acc = LocalAccent.current
+    if (acc == null) {
+        if (keepStop) LinearProgressIndicator(progress = progress, modifier = modifier, color = color, trackColor = trackColor)
+        else LinearProgressIndicator(progress = progress, modifier = modifier, color = color, trackColor = trackColor, drawStopIndicator = {})
+    } else {
+        Canvas(modifier) {
+            val r = androidx.compose.ui.geometry.CornerRadius(size.height / 2f)
+            drawRoundRect(trackColor, cornerRadius = r)
+            val w = size.width * progress().coerceIn(0f, 1f)
+            if (w > 0f) drawRoundRect(
+                Brush.horizontalGradient(listOf(acc.a, acc.b), startX = 0f, endX = size.width),
+                size = androidx.compose.ui.geometry.Size(w, size.height),
+                cornerRadius = r
+            )
+        }
+    }
+}
+
+/** 开关：渐变主题下打开时轨道画渐变。 */
+@Composable
+private fun AccentSwitch(checked: Boolean, onCheckedChange: ((Boolean) -> Unit)?, modifier: Modifier = Modifier) {
+    val acc = LocalAccent.current
+    if (acc == null) {
+        Switch(checked = checked, onCheckedChange = onCheckedChange, modifier = modifier)
+    } else {
+        val on by animateFloatAsState(if (checked) 1f else 0f, tween(Motion.SMALL), label = "accentSwitch")
+        Switch(
+            checked = checked,
+            onCheckedChange = onCheckedChange,
+            modifier = modifier.drawBehind {
+                if (on > 0.01f) {
+                    val w = 52.dp.toPx(); val h = 32.dp.toPx()
+                    val left = (size.width - w) / 2f; val top = (size.height - h) / 2f
+                    drawRoundRect(
+                        Brush.horizontalGradient(listOf(acc.a, acc.b), startX = left, endX = left + w),
+                        topLeft = Offset(left, top),
+                        size = androidx.compose.ui.geometry.Size(w, h),
+                        cornerRadius = androidx.compose.ui.geometry.CornerRadius(h / 2f),
+                        alpha = on
+                    )
+                }
+            },
+            colors = androidx.compose.material3.SwitchDefaults.colors(
+                checkedTrackColor = Color.Transparent,
+                checkedBorderColor = Color.Transparent,
+                checkedThumbColor = acc.onStrong,
+                checkedIconColor = acc.a
+            )
+        )
+    }
+}
+
 /** 渐变滑条：轨道是一条渐变，圆形拇指可拖可点，按下时放大。 */
 @Composable
 private fun GradientSlider(value: Float, brush: Brush, thumbColor: Color, onChange: (Float) -> Unit) {
@@ -920,15 +1085,39 @@ private fun GradientSlider(value: Float, brush: Brush, thumbColor: Color, onChan
     }
 }
 
-/** 自定义主题色面板：磨砂玻璃底部面板里，上面实时预览，中间色相/饱和/亮度三条滑条，下面常用色。 */
+/** 自定义主题色面板：上面实时预览，单色 / 渐变切换；渐变时分起点 / 终点各调一个颜色；中间色相/饱和/亮度三条滑条，下面常用色。 */
 @Composable
-private fun CustomColorSheet(initial: Int, dark: Boolean, onDismiss: () -> Unit, onApply: (Int) -> Unit) {
-    val hsv = remember { FloatArray(3).also { android.graphics.Color.colorToHSV(initial, it) } }
-    var hue by remember { mutableStateOf(hsv[0]) }
-    var sat by remember { mutableStateOf(hsv[1]) }
-    var value by remember { mutableStateOf(hsv[2]) }
-    val argb = android.graphics.Color.HSVToColor(floatArrayOf(hue, sat, value))
-    val scheme = remember(argb, dark) { customScheme(argb, dark) }
+private fun CustomColorSheet(
+    initial: Int,
+    initialGradient: Pair<Int, Int>,
+    startInGradient: Boolean,
+    dark: Boolean,
+    onDismiss: () -> Unit,
+    onApply: (Int) -> Unit,
+    onApplyGradient: (Int, Int) -> Unit
+) {
+    // 9 个数：[0..2] 单色 HSV，[3..5] 渐变起点，[6..8] 渐变终点
+    val hsvState = remember {
+        val all = FloatArray(9)
+        val t = FloatArray(3)
+        android.graphics.Color.colorToHSV(initial, t); t.copyInto(all, 0)
+        android.graphics.Color.colorToHSV(initialGradient.first, t); t.copyInto(all, 3)
+        android.graphics.Color.colorToHSV(initialGradient.second, t); t.copyInto(all, 6)
+        mutableStateListOf(*all.toTypedArray())
+    }
+    var gradMode by remember { mutableStateOf(startInGradient) }
+    var editEnd by remember { mutableStateOf(false) }
+    val o = if (!gradMode) 0 else if (editEnd) 6 else 3
+    val hue = hsvState[o]; val sat = hsvState[o + 1]; val value = hsvState[o + 2]
+    fun setHsv(h: Float = hue, s: Float = sat, v: Float = value) { hsvState[o] = h; hsvState[o + 1] = s; hsvState[o + 2] = v }
+    fun argbAt(i: Int) = android.graphics.Color.HSVToColor(floatArrayOf(hsvState[i], hsvState[i + 1], hsvState[i + 2]))
+    val argb = argbAt(o)
+    val gA = argbAt(3); val gB = argbAt(6)
+    val solidArgb = argbAt(0)
+    val scheme = remember(solidArgb, gA, gB, gradMode, dark) { customScheme(if (gradMode) gradientSeed(gA, gB) else solidArgb, dark) }
+    val acc = remember(gA, gB, gradMode, dark) { if (gradMode) accentFor(gA, gB, dark) else null }
+    // 预览卡片底是浅色粉彩，上面的渐变字用白天的深色版
+    val previewTextBrush = remember(gA, gB) { accentFor(gA, gB, false).horizontal }
     val p by animateColorAsState(scheme.primary, tween(120), label = "pv")
     val pc by animateColorAsState(scheme.primaryContainer, tween(120), label = "pcv")
     val onPc by animateColorAsState(scheme.onPrimaryContainer, tween(120), label = "opcv")
@@ -936,37 +1125,82 @@ private fun CustomColorSheet(initial: Int, dark: Boolean, onDismiss: () -> Unit,
         onDismissRequest = onDismiss,
         title = { Text("自定义主题色") },
         dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } },
-        confirmButton = { Button(onClick = { onApply(argb) }, colors = ButtonDefaults.buttonColors(containerColor = p, contentColor = scheme.onPrimary)) { Text("用这个颜色") } },
+        confirmButton = {
+            if (acc != null) Button(
+                onClick = { onApplyGradient(gA, gB) },
+                modifier = Modifier.clip(ButtonDefaults.shape).background(acc.fill, ButtonDefaults.shape),
+                colors = ButtonDefaults.buttonColors(containerColor = Color.Transparent, contentColor = acc.onFill)
+            ) { Text("用这个颜色") }
+            else Button(onClick = { onApply(solidArgb) }, colors = ButtonDefaults.buttonColors(containerColor = p, contentColor = scheme.onPrimary)) { Text("用这个颜色") }
+        },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    ChoiceChip("单色", !gradMode) { gradMode = false }
+                    ChoiceChip("渐变", gradMode) { gradMode = true }
+                }
                 // 预览：模拟一张卡片 + 主按钮 + 标签
                 Column(
                     Modifier.fillMaxWidth().clip(RoundedCornerShape(22.dp))
-                        .background(Brush.linearGradient(listOf(pc.copy(alpha = .85f), p.copy(alpha = .35f))))
+                        .background(
+                            if (acc != null) Brush.linearGradient(listOf(acc.fillA.copy(alpha = .9f), acc.fillB.copy(alpha = .9f)))
+                            else Brush.linearGradient(listOf(pc.copy(alpha = .85f), p.copy(alpha = .35f)))
+                        )
                         .border(1.dp, Color.White.copy(alpha = .4f), RoundedCornerShape(22.dp))
                         .padding(16.dp),
                     verticalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
+                    val fg = acc?.onFill ?: onPc
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        Box(Modifier.size(34.dp).clip(CircleShape).background(p))
+                        Box(Modifier.size(34.dp).clip(CircleShape).then(if (acc != null) Modifier.background(acc.brush) else Modifier.background(p)))
                         Spacer(Modifier.width(10.dp))
                         Column(Modifier.weight(1f)) {
-                            Text("今天", fontWeight = FontWeight.Bold, color = onPc)
-                            Text("背了 30 个词 · 记了 3 笔", style = MaterialTheme.typography.labelMedium, color = onPc.copy(alpha = .75f))
+                            Text("今天", fontWeight = FontWeight.Bold, color = fg)
+                            Text("背了 30 个词 · 记了 3 笔", style = MaterialTheme.typography.labelMedium, color = fg.copy(alpha = .75f))
                         }
-                        Text(String.format("#%06X", argb and 0xFFFFFF), style = MaterialTheme.typography.labelLarge, color = onPc)
+                        Text(
+                            if (acc != null) String.format("#%06X → #%06X", gA and 0xFFFFFF, gB and 0xFFFFFF) else String.format("#%06X", solidArgb and 0xFFFFFF),
+                            style = MaterialTheme.typography.labelMedium, color = fg
+                        )
                     }
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Box(Modifier.clip(RoundedCornerShape(50)).background(p).padding(horizontal = 16.dp, vertical = 8.dp)) { Text("记一笔", color = scheme.onPrimary, style = MaterialTheme.typography.labelLarge) }
-                        Box(Modifier.clip(RoundedCornerShape(50)).border(1.dp, p, RoundedCornerShape(50)).padding(horizontal = 16.dp, vertical = 8.dp)) { Text("背单词", color = onPc, style = MaterialTheme.typography.labelLarge) }
+                        if (acc != null) {
+                            Box(Modifier.clip(RoundedCornerShape(50)).background(acc.brush).padding(horizontal = 16.dp, vertical = 8.dp)) { Text("记一笔", color = acc.onStrong, style = MaterialTheme.typography.labelLarge) }
+                            Box(Modifier.clip(RoundedCornerShape(50)).background(Color.White.copy(alpha = .55f)).padding(horizontal = 16.dp, vertical = 8.dp)) {
+                                Text("背单词", style = MaterialTheme.typography.labelLarge.merge(androidx.compose.ui.text.TextStyle(brush = previewTextBrush)))
+                            }
+                        } else {
+                            Box(Modifier.clip(RoundedCornerShape(50)).background(p).padding(horizontal = 16.dp, vertical = 8.dp)) { Text("记一笔", color = scheme.onPrimary, style = MaterialTheme.typography.labelLarge) }
+                            Box(Modifier.clip(RoundedCornerShape(50)).border(1.dp, p, RoundedCornerShape(50)).padding(horizontal = 16.dp, vertical = 8.dp)) { Text("背单词", color = onPc, style = MaterialTheme.typography.labelLarge) }
+                        }
+                    }
+                }
+                if (gradMode) {
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                        listOf(false to "起点", true to "终点").forEach { (isEnd, label) ->
+                            val sel = editEnd == isEnd
+                            val src = remember { MutableInteractionSource() }
+                            Row(
+                                Modifier.pressScale(src).clip(RoundedCornerShape(16.dp))
+                                    .background(if (sel) MaterialTheme.colorScheme.onSurface.copy(alpha = .10f) else Color.Transparent)
+                                    .border(1.dp, MaterialTheme.colorScheme.onSurface.copy(alpha = if (sel) .35f else .12f), RoundedCornerShape(16.dp))
+                                    .clickable(interactionSource = src, indication = null) { editEnd = isEnd }
+                                    .padding(horizontal = 12.dp, vertical = 8.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Box(Modifier.size(14.dp).clip(CircleShape).background(Color(if (isEnd) gB else gA)).border(1.dp, Color.Black.copy(alpha = .1f), CircleShape))
+                                Spacer(Modifier.width(6.dp))
+                                Text(label, style = MaterialTheme.typography.labelLarge, fontWeight = if (sel) FontWeight.SemiBold else FontWeight.Normal)
+                            }
+                        }
                     }
                 }
                 Text("色相", style = MaterialTheme.typography.labelLarge)
-                GradientSlider(hue / 360f, Brush.horizontalGradient((0..6).map { hsl(it * 60f, 1f, 0.5f) }), Color(android.graphics.Color.HSVToColor(floatArrayOf(hue, 1f, 1f)))) { hue = it * 360f }
+                GradientSlider(hue / 360f, Brush.horizontalGradient((0..6).map { hsl(it * 60f, 1f, 0.5f) }), Color(android.graphics.Color.HSVToColor(floatArrayOf(hue, 1f, 1f)))) { setHsv(h = it * 360f) }
                 Text("鲜艳度", style = MaterialTheme.typography.labelLarge)
-                GradientSlider(sat, Brush.horizontalGradient(listOf(Color(android.graphics.Color.HSVToColor(floatArrayOf(hue, 0f, value))), Color(android.graphics.Color.HSVToColor(floatArrayOf(hue, 1f, value))))), Color(argb)) { sat = it }
+                GradientSlider(sat, Brush.horizontalGradient(listOf(Color(android.graphics.Color.HSVToColor(floatArrayOf(hue, 0f, value))), Color(android.graphics.Color.HSVToColor(floatArrayOf(hue, 1f, value))))), Color(argb)) { setHsv(s = it) }
                 Text("明暗", style = MaterialTheme.typography.labelLarge)
-                GradientSlider(value, Brush.horizontalGradient(listOf(Color.Black, Color(android.graphics.Color.HSVToColor(floatArrayOf(hue, sat, 1f))))), Color(argb)) { value = it.coerceAtLeast(0.05f) }
+                GradientSlider(value, Brush.horizontalGradient(listOf(Color.Black, Color(android.graphics.Color.HSVToColor(floatArrayOf(hue, sat, 1f))))), Color(argb)) { setHsv(v = it.coerceAtLeast(0.05f)) }
                 Text("常用色", style = MaterialTheme.typography.labelLarge)
                 Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                     CUSTOM_PRESETS.forEach { c ->
@@ -983,7 +1217,7 @@ private fun CustomColorSheet(initial: Int, dark: Boolean, onDismiss: () -> Unit,
                                 .background(Color(c))
                                 .clickable(interactionSource = src, indication = null) {
                                     val t = FloatArray(3); android.graphics.Color.colorToHSV(c, t)
-                                    hue = t[0]; sat = t[1]; value = t[2]
+                                    setHsv(t[0], t[1], t[2])
                                 }
                         )
                     }
@@ -1136,6 +1370,7 @@ private fun GlassBottomBar(selected: Tab, onSelect: (Tab) -> Unit, onAdd: () -> 
             tabsCount = tabs.size,
             modifier = Modifier.weight(1f),
             accentColor = MaterialTheme.colorScheme.primary,
+            accentBrush = LocalAccent.current?.horizontal,
             isLightTheme = !dark
         ) {
             tabs.forEach { item ->
@@ -1150,9 +1385,10 @@ private fun GlassBottomBar(selected: Tab, onSelect: (Tab) -> Unit, onAdd: () -> 
             onClick = onAdd,
             backdrop = backdrop,
             tint = MaterialTheme.colorScheme.primary,
+            tintBrush = LocalAccent.current?.fill,
             modifier = Modifier.size(64.dp)
         ) {
-            Icon(Icons.Default.Add, contentDescription = "发记录", tint = MaterialTheme.colorScheme.onPrimary, modifier = Modifier.size(30.dp))
+            Icon(Icons.Default.Add, contentDescription = "发记录", tint = onAccentFill(), modifier = Modifier.size(30.dp))
         }
     }
 }
@@ -1164,18 +1400,23 @@ private fun GlassButton(
     modifier: Modifier = Modifier,
     tint: Color? = null,
     enabled: Boolean = true,
+    accent: Boolean = false,
     content: @Composable androidx.compose.foundation.layout.RowScope.() -> Unit
 ) {
     val backdrop = LocalBackdrop.current
+    val accentBrush = if (accent) LocalAccent.current?.fill else null
     val enabledAlpha by animateFloatAsState(if (enabled) 1f else 0.45f, tween(Motion.SMALL), label = "glassEnabled")
     if (backdrop != null) {
         LiquidButton(
             onClick = { if (enabled) onClick() },
             backdrop = backdrop,
             tint = tint ?: Color.Unspecified,
+            tintBrush = accentBrush,
             modifier = modifier.graphicsLayer { alpha = enabledAlpha },
             content = content
         )
+    } else if (accentBrush != null) {
+        Button(onClick = onClick, enabled = enabled, modifier = modifier.clip(RoundedCornerShape(50)).background(accentBrush, RoundedCornerShape(50)).graphicsLayer { alpha = enabledAlpha }, shape = RoundedCornerShape(50), colors = ButtonDefaults.buttonColors(containerColor = Color.Transparent, contentColor = onAccentFill(), disabledContainerColor = Color.Transparent)) { content() }
     } else if (tint != null) {
         Button(onClick = onClick, enabled = enabled, modifier = modifier, shape = RoundedCornerShape(50), colors = ButtonDefaults.buttonColors(containerColor = tint)) { content() }
     } else {
@@ -1367,6 +1608,7 @@ private fun LocalFirstApp(db: AppDatabase, launchDone: Boolean = true) {
     // 主题颜色：默认青绿（原来的主色），可换海蓝/紫罗兰/暖橙/樱粉
     var paletteId by remember { mutableStateOf(SettingsStore.getPalette(context)) }
     var customColor by remember { mutableStateOf(SettingsStore.getCustomColor(context)) }
+    var customGradient by remember { mutableStateOf(SettingsStore.getCustomGradient(context)) }
     // 磨砂玻璃主题：默认开，可在「我的 - 外观」里关
     var glassOn by remember { mutableStateOf(SettingsStore.isGlassEnabled(context)) }
     // 自定义背景图：玻璃模式下铺在最底层
@@ -1454,7 +1696,11 @@ private fun LocalFirstApp(db: AppDatabase, launchDone: Boolean = true) {
         packReady = true
     }
 
-    val baseScheme = paletteFor(paletteId, useDarkTheme, customColor)
+    // 渐变主题：整套配色用一个种子色生成（保证可读），强调处另外画渐变；深浅切换直接换，不做逐帧插值
+    val themeGradient = gradientOf(paletteId, customGradient)
+    val baseScheme = if (themeGradient != null) customScheme(gradientSeed(themeGradient.first, themeGradient.second), useDarkTheme)
+        else paletteFor(paletteId, useDarkTheme, customColor)
+    val accent = remember(themeGradient, useDarkTheme) { themeGradient?.let { accentFor(it.first, it.second, useDarkTheme) } }
     MaterialTheme(colorScheme = animateColorScheme(if (glassOn) glassScheme(baseScheme, useDarkTheme) else baseScheme, useDarkTheme)) {
         val layerBackdrop = rememberLayerBackdrop()
         val overlays = remember { mutableStateMapOf<Any, OverlayEntry>() }
@@ -1464,7 +1710,8 @@ private fun LocalFirstApp(db: AppDatabase, launchDone: Boolean = true) {
             LocalOverlay provides overlays,
             LocalGlass provides glassOn,
             LocalBackdrop provides (if (glassOn) layerBackdrop else null),
-            LocalBgPath provides bgPath
+            LocalBgPath provides bgPath,
+            LocalAccent provides accent
         ) {
         Box(Modifier.fillMaxSize()) {
         if (glassOn) GlassBackground(useDarkTheme, Modifier.layerBackdrop(layerBackdrop))
@@ -1480,8 +1727,8 @@ private fun LocalFirstApp(db: AppDatabase, launchDone: Boolean = true) {
                         NavigationBarItem(
                             selected = tab == item,
                             onClick = { selectTab(item) },
-                            icon = { Icon(iconFor(item), contentDescription = item.label) },
-                            label = { Text(item.label) },
+                            icon = { Icon(iconFor(item), contentDescription = item.label, modifier = Modifier.brushTint(if (tab == item) LocalAccent.current?.brush else null)) },
+                            label = { Text(item.label, modifier = Modifier.brushTint(if (tab == item) LocalAccent.current?.horizontal else null)) },
                             colors = NavigationBarItemDefaults.colors(
                                 indicatorColor = MaterialTheme.colorScheme.secondaryContainer,
                                 selectedIconColor = MaterialTheme.colorScheme.primary,
@@ -1588,12 +1835,19 @@ private fun LocalFirstApp(db: AppDatabase, launchDone: Boolean = true) {
                             SettingsStore.setPalette(context, id)
                         },
                         customColor = customColor,
+                        customGradient = customGradient,
                         darkNow = useDarkTheme,
                         onCustomColor = { c ->
                             customColor = c
                             SettingsStore.setCustomColor(context, c)
                             paletteId = PaletteId.CUSTOM
                             SettingsStore.setPalette(context, PaletteId.CUSTOM)
+                        },
+                        onCustomGradient = { a, b ->
+                            customGradient = a to b
+                            SettingsStore.setCustomGradient(context, a, b)
+                            paletteId = PaletteId.CUSTOM_GRADIENT
+                            SettingsStore.setPalette(context, PaletteId.CUSTOM_GRADIENT)
                         },
                         glassOn = glassOn,
                         onGlassChange = { on ->
@@ -1887,7 +2141,7 @@ private fun RecordScreen(
                 }
                 Spacer(Modifier.width(12.dp))
                 Column(Modifier.weight(1f)) {
-                    Text(nickname, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold, maxLines = 1)
+                    Text(nickname, style = accentTitle(MaterialTheme.typography.headlineSmall), fontWeight = FontWeight.Bold, maxLines = 1)
                 }
                 if (LocalBackdrop.current != null) {
                     GlassButton(onClick = { if (records.isEmpty()) onSearch() else showDatePick = true }, modifier = Modifier.size(46.dp)) {
@@ -2496,7 +2750,7 @@ private fun EmptyRecordState(onAddRecord: () -> Unit) {
         Spacer(Modifier.height(14.dp))
         Text("还没有记录", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
         Spacer(Modifier.height(16.dp))
-        Button(onClick = onAddRecord) { Text("发第一条") }
+        Button(onClick = onAddRecord, modifier = Modifier.accentFill(ButtonDefaults.shape), colors = accentButtonColors()) { Text("发第一条") }
     }
 }
 
@@ -2692,8 +2946,9 @@ private fun AddRecordScreen(
                         onClick = publish,
                         enabled = canPublish && !publishing,
                         tint = MaterialTheme.colorScheme.primary,
+                        accent = true,
                         modifier = Modifier.align(Alignment.CenterEnd)
-                    ) { publishLabel(MaterialTheme.colorScheme.onPrimary) }
+                    ) { publishLabel(onAccentFill()) }
                 } else {
                     val pubSrc = remember { MutableInteractionSource() }
                     Button(
@@ -2702,7 +2957,8 @@ private fun AddRecordScreen(
                         interactionSource = pubSrc,
                         shape = RoundedCornerShape(50),
                         contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 22.dp, vertical = 8.dp),
-                        modifier = Modifier.align(Alignment.CenterEnd).pressScale(pubSrc)
+                        colors = if (LocalAccent.current != null) accentButtonColors() else ButtonDefaults.buttonColors(),
+                        modifier = Modifier.align(Alignment.CenterEnd).pressScale(pubSrc).then(if (canPublish && !publishing) Modifier.accentFill(RoundedCornerShape(50)) else Modifier)
                     ) { publishLabel(Color.Unspecified) }
                 }
             }
@@ -2794,7 +3050,7 @@ private fun AddRecordScreen(
                             }
                             Spacer(Modifier.width(8.dp))
                             Text("记一笔账", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
-                            Switch(checked = recordMoney, onCheckedChange = {
+                            AccentSwitch(checked = recordMoney, onCheckedChange = {
                                 haptic.performHapticFeedback(if (it) HapticFeedbackType.ToggleOn else HapticFeedbackType.ToggleOff)
                                 recordMoney = it
                             })
@@ -2887,15 +3143,16 @@ private fun AddRecordScreen(
                                 verticalArrangement = Arrangement.spacedBy(8.dp)
                             ) {
                                 val fill = if (moneyKind == "expense") MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.primary
-                                val onFill = if (moneyKind == "expense") MaterialTheme.colorScheme.onSecondary else MaterialTheme.colorScheme.onPrimary
+                                val gradSel = moneyKind != "expense" && LocalAccent.current != null
+                                val onFill = if (moneyKind == "expense") MaterialTheme.colorScheme.onSecondary else onAccentFill()
                                 categories.forEach { c ->
                                     val sel = category == c
                                     val catSrc = remember { MutableInteractionSource() }
-                                    val catBg by animateColorAsState(if (sel) fill else MaterialTheme.colorScheme.surface, tween(Motion.SMALL), label = "catBg")
+                                    val catBg by animateColorAsState(if (sel) (if (gradSel) Color.Transparent else fill) else MaterialTheme.colorScheme.surface, tween(Motion.SMALL), label = "catBg")
                                     Surface(
                                         onClick = { category = c },
                                         interactionSource = catSrc,
-                                        modifier = Modifier.pressScale(catSrc),
+                                        modifier = Modifier.pressScale(catSrc).then(if (sel && gradSel) Modifier.accentFill(RoundedCornerShape(50)) else Modifier),
                                         shape = RoundedCornerShape(50),
                                         color = catBg,
                                         border = if (sel) null else BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
@@ -2958,12 +3215,13 @@ private fun BottomPill(label: String, icon: ImageVector, onClick: () -> Unit) {
 private fun ChoiceChip(label: String, selected: Boolean, onClick: () -> Unit) {
     val src = remember { MutableInteractionSource() }
     val haptic = LocalHapticFeedback.current
-    val bg by animateColorAsState(if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant, tween(Motion.SMALL), label = "chipBg")
-    val fg by animateColorAsState(if (selected) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant, tween(Motion.SMALL), label = "chipFg")
+    val acc = LocalAccent.current
+    val bg by animateColorAsState(if (selected) (if (acc != null) Color.Transparent else MaterialTheme.colorScheme.primary) else MaterialTheme.colorScheme.surfaceVariant, tween(Motion.SMALL), label = "chipBg")
+    val fg by animateColorAsState(if (selected) onAccentFill() else MaterialTheme.colorScheme.onSurfaceVariant, tween(Motion.SMALL), label = "chipFg")
     Surface(
         onClick = { if (!selected) haptic.performHapticFeedback(HapticFeedbackType.SegmentTick); onClick() },
         interactionSource = src,
-        modifier = Modifier.pressScale(src),
+        modifier = Modifier.pressScale(src).then(if (selected) Modifier.accentFill(RoundedCornerShape(16.dp)) else Modifier),
         shape = RoundedCornerShape(16.dp),
         color = bg,
         contentColor = fg
@@ -2974,15 +3232,16 @@ private fun ChoiceChip(label: String, selected: Boolean, onClick: () -> Unit) {
 
 /** 主题颜色选择：左边一个色点，后面是颜色名，选中态用当前主色填充。 */
 @Composable
-private fun PaletteChip(label: String, dotColor: Color, selected: Boolean, onClick: () -> Unit) {
+private fun PaletteChip(label: String, dotColor: Color, selected: Boolean, dotBrush: Brush? = null, onClick: () -> Unit) {
     val src = remember { MutableInteractionSource() }
     val haptic = LocalHapticFeedback.current
-    val bg by animateColorAsState(if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant, tween(Motion.SMALL), label = "paletteBg")
-    val fg by animateColorAsState(if (selected) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant, tween(Motion.SMALL), label = "paletteFg")
+    val acc = LocalAccent.current
+    val bg by animateColorAsState(if (selected) (if (acc != null) Color.Transparent else MaterialTheme.colorScheme.primary) else MaterialTheme.colorScheme.surfaceVariant, tween(Motion.SMALL), label = "paletteBg")
+    val fg by animateColorAsState(if (selected) onAccentFill() else MaterialTheme.colorScheme.onSurfaceVariant, tween(Motion.SMALL), label = "paletteFg")
     Surface(
         onClick = { if (!selected) haptic.performHapticFeedback(HapticFeedbackType.SegmentTick); onClick() },
         interactionSource = src,
-        modifier = Modifier.pressScale(src),
+        modifier = Modifier.pressScale(src).then(if (selected) Modifier.accentFill(RoundedCornerShape(16.dp)) else Modifier),
         shape = RoundedCornerShape(16.dp),
         color = bg,
         contentColor = fg
@@ -2991,10 +3250,46 @@ private fun PaletteChip(label: String, dotColor: Color, selected: Boolean, onCli
             modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Box(Modifier.size(12.dp).background(dotColor, RoundedCornerShape(6.dp)))
+            Box(Modifier.size(12.dp).then(if (dotBrush != null) Modifier.background(dotBrush, RoundedCornerShape(6.dp)) else Modifier.background(dotColor, RoundedCornerShape(6.dp))))
             Spacer(Modifier.width(6.dp))
             Text(label, style = MaterialTheme.typography.labelLarge)
         }
+    }
+}
+
+/** 渐变主题色色块：圆形填渐变，下面是名字；选中时外面一圈描边（和常用色色块一样的弹簧）。 */
+@Composable
+private fun GradientSwatch(g: GradientPalette, selected: Boolean, onClick: () -> Unit) {
+    val haptic = LocalHapticFeedback.current
+    val src = remember { MutableInteractionSource() }
+    val ringRaw by animateFloatAsState(if (selected) 1f else 0f, spring(dampingRatio = 0.6f, stiffness = 500f), label = "gradRing")
+    val ring = ringRaw.coerceIn(0f, 1f)
+    val ringColor = MaterialTheme.colorScheme.onSurface
+    val brush = remember(g) { Brush.linearGradient(listOf(Color(g.start), Color(g.end))) }
+    Column(
+        Modifier.width(84.dp)
+            .clickable(interactionSource = src, indication = null) {
+                if (!selected) haptic.performHapticFeedback(HapticFeedbackType.SegmentTick)
+                onClick()
+            },
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        Box(
+            Modifier.size(46.dp).pressScale(src)
+                .border((2f * ring).dp, ringColor.copy(alpha = .75f * ring), CircleShape)
+                .padding((4f * ring).dp)
+                .clip(CircleShape)
+                .background(brush)
+                .border(1.dp, Color.Black.copy(alpha = .06f), CircleShape)
+        )
+        Spacer(Modifier.height(6.dp))
+        Text(
+            g.label,
+            fontSize = 11.sp,
+            maxLines = 1,
+            fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+            color = if (selected) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant
+        )
     }
 }
 
@@ -3182,12 +3477,11 @@ private fun WordsScreen(
             Spacer(Modifier.height(8.dp))
             // 进度条平滑前进，不是一格一格跳
             val fracAnim by animateFloatAsState(frac, motion(spring(dampingRatio = 1f, stiffness = Spring.StiffnessLow)), label = "studyProgress")
-            LinearProgressIndicator(
+            AccentProgress(
                 progress = { fracAnim },
                 modifier = Modifier.fillMaxWidth().height(8.dp).clip(RoundedCornerShape(50)),
                 color = MaterialTheme.colorScheme.primary,
-                trackColor = MaterialTheme.colorScheme.surfaceVariant,
-                drawStopIndicator = {}
+                trackColor = MaterialTheme.colorScheme.surfaceVariant
             )
             Spacer(Modifier.height(12.dp))
             val wrong = progress?.wrongCount ?: 0
@@ -3302,8 +3596,8 @@ private fun WordsScreen(
                         GlassButton(onClick = { answer(false) }, modifier = Modifier.weight(1f).height(54.dp)) {
                             Text("不认识", fontWeight = FontWeight.SemiBold, color = warnColor)
                         }
-                        GlassButton(onClick = { answer(true) }, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.weight(1f).height(54.dp)) {
-                            Text("认识", fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onPrimary)
+                        GlassButton(onClick = { answer(true) }, tint = MaterialTheme.colorScheme.primary, accent = true, modifier = Modifier.weight(1f).height(54.dp)) {
+                            Text("认识", fontWeight = FontWeight.SemiBold, color = onAccentFill())
                         }
                     } else {
                         val noSrc = remember { MutableInteractionSource() }
@@ -3318,10 +3612,10 @@ private fun WordsScreen(
                         ) { Text("不认识", fontWeight = FontWeight.SemiBold) }
                         Button(
                             onClick = { answer(true) },
-                            modifier = Modifier.weight(1f).height(54.dp).pressScale(yesSrc),
+                            modifier = Modifier.weight(1f).height(54.dp).pressScale(yesSrc).accentFill(RoundedCornerShape(50)),
                             interactionSource = yesSrc,
                             shape = RoundedCornerShape(50),
-                            colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
+                            colors = accentButtonColors()
                         ) { Text("认识", fontWeight = FontWeight.SemiBold) }
                     }
                 }
@@ -3329,21 +3623,21 @@ private fun WordsScreen(
                 // 「下一个 → 完成」在同一个按钮里换字
                 val nextLabel: @Composable () -> Unit = {
                     AnimatedContent(last, transitionSpec = { fadeIn(tween(Motion.SMALL)) togetherWith fadeOut(tween(90)) }, label = "nextLabel") { isLast ->
-                        Text(if (isLast) "完成" else "下一个", fontWeight = FontWeight.SemiBold, color = if (glassUi) MaterialTheme.colorScheme.onPrimary else androidx.compose.ui.graphics.Color.Unspecified)
+                        Text(if (isLast) "完成" else "下一个", fontWeight = FontWeight.SemiBold, color = if (glassUi) onAccentFill() else androidx.compose.ui.graphics.Color.Unspecified)
                     }
                 }
                 if (glassUi) {
-                    GlassButton(onClick = { next() }, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.fillMaxWidth().height(54.dp)) {
+                    GlassButton(onClick = { next() }, tint = MaterialTheme.colorScheme.primary, accent = true, modifier = Modifier.fillMaxWidth().height(54.dp)) {
                         nextLabel()
                     }
                 } else {
                     val nextSrc = remember { MutableInteractionSource() }
                     Button(
                         onClick = { next() },
-                        modifier = Modifier.fillMaxWidth().height(54.dp).pressScale(nextSrc),
+                        modifier = Modifier.fillMaxWidth().height(54.dp).pressScale(nextSrc).accentFill(RoundedCornerShape(50)),
                         interactionSource = nextSrc,
                         shape = RoundedCornerShape(50),
-                        colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
+                        colors = accentButtonColors()
                     ) { nextLabel() }
                 }
             }
@@ -3364,7 +3658,7 @@ private fun WordsScreen(
                 Spacer(Modifier.height(4.dp))
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     IconButton(onClick = { showUnknownBook = false }) { Icon(Icons.Default.ChevronLeft, contentDescription = "返回") }
-                    Text("生词本", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
+                    Text("生词本", style = accentTitle(MaterialTheme.typography.headlineSmall), fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
                     if (unknownWords.isNotEmpty()) {
                         Surface(color = MaterialTheme.colorScheme.primary.copy(alpha = .14f), shape = RoundedCornerShape(50)) {
                             Text("${unknownWords.size}", color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold, modifier = Modifier.padding(horizontal = 10.dp, vertical = 3.dp))
@@ -3376,9 +3670,9 @@ private fun WordsScreen(
             if (unknownWords.isNotEmpty()) item {
                 Button(
                     onClick = { startUnknownReview() },
-                    modifier = Modifier.fillMaxWidth().height(50.dp),
+                    modifier = Modifier.fillMaxWidth().height(50.dp).accentFill(RoundedCornerShape(50)),
                     shape = RoundedCornerShape(50),
-                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
+                    colors = accentButtonColors()
                 ) { Icon(Icons.Default.PlayArrow, null); Spacer(Modifier.width(6.dp)); Text("复习生词本", fontWeight = FontWeight.SemiBold) }
             }
         if (unknownWords.isEmpty()) {
@@ -3457,7 +3751,7 @@ private fun WordsScreen(
     LazyColumn(modifier.fillMaxSize().padding(horizontal = 20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         item {
             Spacer(Modifier.height(4.dp))
-            Text("背单词", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
+            Text("背单词", style = accentTitle(MaterialTheme.typography.headlineMedium), fontWeight = FontWeight.Bold)
         }
         item {
             // 词书卡：书名 / 进度 / 继续学习 · 换词书 · 从头开始
@@ -3472,17 +3766,17 @@ private fun WordsScreen(
                         else "共 $total 个词",
                         color = onC
                     )
-                    LinearProgressIndicator(
+                    AccentProgress(
                         progress = { if (total == 0) 0f else study.index.toFloat() / total },
                         modifier = Modifier.fillMaxWidth().height(6.dp).clip(RoundedCornerShape(50)),
                         color = MaterialTheme.colorScheme.primary,
-                        trackColor = onC.copy(alpha = .15f),
-                        drawStopIndicator = {}
+                        trackColor = onC.copy(alpha = .15f)
                     )
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
                         Button(
                             onClick = { startSession(resume = true) },
-                            colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary),
+                            modifier = Modifier.accentFill(ButtonDefaults.shape),
+                            colors = accentButtonColors(),
                             contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 16.dp)
                         ) {
                             Icon(Icons.Default.PlayArrow, contentDescription = null)
@@ -3570,14 +3864,16 @@ private fun WordsScreen(
                                 val sel = b.id == bookId
                                 val idx = SettingsStore.getBookIndex(context, b.id)
                                 val pct = if (b.count == 0) 0f else (idx.toFloat() / b.count).coerceIn(0f, 1f)
-                                val fg by animateColorAsState(if (sel) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurface, tween(Motion.SMALL), label = "bookFg")
-                                val bookBg by animateColorAsState(if (sel) MaterialTheme.colorScheme.primary.copy(alpha = .88f) else MaterialTheme.colorScheme.onSurface.copy(alpha = .07f), tween(Motion.SMALL), label = "bookBg")
+                                val bookAcc = LocalAccent.current
+                                val fg by animateColorAsState(if (sel) onAccentFill() else MaterialTheme.colorScheme.onSurface, tween(Motion.SMALL), label = "bookFg")
+                                val bookBg by animateColorAsState(if (sel) (if (bookAcc != null) Color.Transparent else MaterialTheme.colorScheme.primary.copy(alpha = .88f)) else MaterialTheme.colorScheme.onSurface.copy(alpha = .07f), tween(Motion.SMALL), label = "bookBg")
                                 val bookSrc = remember { MutableInteractionSource() }
                                 Column(
                                     Modifier
                                         .weight(1f)
                                         .pressScale(bookSrc)
                                         .clip(RoundedCornerShape(18.dp))
+                                        .then(if (sel && bookAcc != null) Modifier.background(bookAcc.fill) else Modifier)
                                         .background(bookBg)
                                         .border(1.dp, Color.White.copy(alpha = if (sel) 0f else .08f), RoundedCornerShape(18.dp))
                                         .clickable(interactionSource = bookSrc, indication = androidx.compose.foundation.LocalIndication.current) {
@@ -3596,7 +3892,7 @@ private fun WordsScreen(
                                     }
                                     Text(if (idx > 0) "学到 ${idx + 1} / %,d".format(b.count) else "%,d 词".format(b.count), style = MaterialTheme.typography.labelMedium, color = fg.copy(alpha = .72f))
                                     Box(Modifier.fillMaxWidth().height(4.dp).clip(RoundedCornerShape(50)).background(fg.copy(alpha = .14f))) {
-                                        Box(Modifier.fillMaxWidth(pct.coerceAtLeast(if (idx > 0) 0.03f else 0f)).fillMaxHeight().clip(RoundedCornerShape(50)).background(if (sel) fg else MaterialTheme.colorScheme.primary))
+                                        Box(Modifier.fillMaxWidth(pct.coerceAtLeast(if (idx > 0) 0.03f else 0f)).fillMaxHeight().clip(RoundedCornerShape(50)).then(if (!sel && bookAcc != null) Modifier.background(bookAcc.horizontal) else Modifier.background(if (sel) fg else MaterialTheme.colorScheme.primary)))
                                     }
                                 }
                             }
@@ -3651,7 +3947,7 @@ private fun WordBookPage(
         Spacer(Modifier.height(4.dp))
         Row(verticalAlignment = Alignment.CenterVertically) {
             IconButton(onClick = onBack) { Icon(Icons.Default.ChevronLeft, contentDescription = "返回") }
-            Text("单词书", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
+            Text("单词书", style = accentTitle(MaterialTheme.typography.headlineSmall), fontWeight = FontWeight.Bold)
             Spacer(Modifier.width(8.dp))
             Text(title, style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, modifier = Modifier.weight(1f))
             Surface(color = MaterialTheme.colorScheme.primary.copy(alpha = .14f), shape = RoundedCornerShape(50)) {
@@ -3780,10 +4076,10 @@ private fun WordDetailDialog(
                         if (p.dueAt <= System.currentTimeMillis()) "现在该复习了" else "下次复习：${dateFmt.format(Date(p.dueAt))}",
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
-                    LinearProgressIndicator(
+                    AccentProgress(
                         progress = { (p.stage.toFloat() / WordStudy.MASTERED_STAGE).coerceIn(0f, 1f) },
                         modifier = Modifier.fillMaxWidth().height(6.dp).clip(RoundedCornerShape(50)),
-                        drawStopIndicator = {}
+                        trackColor = androidx.compose.material3.ProgressIndicatorDefaults.linearTrackColor
                     )
                 }
             }
@@ -3829,7 +4125,7 @@ private fun OverviewScreen(records: List<RecordEntry>, wordCount: Int, modifier:
     LazyColumn(modifier.fillMaxSize().padding(horizontal = 16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         item {
             Spacer(Modifier.height(4.dp))
-            Text("总览", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
+            Text("总览", style = accentTitle(MaterialTheme.typography.headlineMedium), fontWeight = FontWeight.Bold)
         }
         item {
             // 本月结余：玻璃主题下是玻璃大卡，关掉玻璃时是主色大卡
@@ -3969,8 +4265,10 @@ private fun OverviewScreen(records: List<RecordEntry>, wordCount: Int, modifier:
                                         val dayRecords = if (day == null) emptyList() else cellRecords[day].orEmpty()
                                         val isToday = isThisMonth && day == now.get(Calendar.DAY_OF_MONTH)
                                         val selected = day != null && day == selectedDay && ym == year * 12 + month
+                                        val calAcc = LocalAccent.current
                                         val cellBg by animateColorAsState(
                                             when {
+                                                selected && calAcc != null -> Color.Transparent
                                                 selected -> MaterialTheme.colorScheme.primaryContainer
                                                 dayRecords.isNotEmpty() -> MaterialTheme.colorScheme.surfaceVariant
                                                 else -> Color.Transparent
@@ -3980,6 +4278,7 @@ private fun OverviewScreen(records: List<RecordEntry>, wordCount: Int, modifier:
                                         Box(
                                             modifier = Modifier.weight(1f).height(62.dp).padding(2.dp)
                                                 .clip(RoundedCornerShape(10.dp))
+                                                .then(if (selected && calAcc != null) Modifier.background(calAcc.fill) else Modifier)
                                                 .background(cellBg)
                                                 .then(
                                                     if (day != null) Modifier.clickable {
@@ -3996,7 +4295,7 @@ private fun OverviewScreen(records: List<RecordEntry>, wordCount: Int, modifier:
                                                         style = MaterialTheme.typography.bodySmall,
                                                         fontWeight = if (isToday || selected) FontWeight.Bold else FontWeight.Normal,
                                                         color = when {
-                                                            selected -> MaterialTheme.colorScheme.onPrimaryContainer
+                                                            selected -> calAcc?.onFill ?: MaterialTheme.colorScheme.onPrimaryContainer
                                                             isToday -> MaterialTheme.colorScheme.primary
                                                             else -> MaterialTheme.colorScheme.onSurface
                                                         }
@@ -4081,8 +4380,10 @@ private fun DataScreen(
     paletteId: String,
     onPaletteChange: (String) -> Unit,
     customColor: Int,
+    customGradient: Pair<Int, Int>,
     darkNow: Boolean,
     onCustomColor: (Int) -> Unit,
+    onCustomGradient: (Int, Int) -> Unit,
     glassOn: Boolean,
     onGlassChange: (Boolean) -> Unit,
     hasCustomBg: Boolean,
@@ -4157,7 +4458,7 @@ private fun DataScreen(
                             Text("把照片和视频一起打包", fontWeight = FontWeight.SemiBold)
                             InfoTip("记录整理成一份文字，开头带给 AI 的说明，同时复制到剪贴板。打包时文字和图片放进压缩包，存到「下载/知行」，视频截 3 帧拼成一张图。不收 zip 的 AI，解压后把文字和图片一起发。")
                         }
-                        Switch(checked = aiWithMedia, onCheckedChange = { aiWithMedia = it })
+                        AccentSwitch(checked = aiWithMedia, onCheckedChange = { aiWithMedia = it })
                     }
                     listOf(7 to "最近 7 天", 30 to "最近 30 天", null to "全部记录").forEach { (d, label) ->
                         OutlinedButton(onClick = { showAiExport = false; exportForAi(d, aiWithMedia) }, enabled = !aiExporting, modifier = Modifier.fillMaxWidth()) { Text(label) }
@@ -4257,7 +4558,7 @@ private fun DataScreen(
         Row(verticalAlignment = Alignment.CenterVertically) {
             IconButton(onClick = { page = "main" }) { Icon(Icons.Default.ChevronLeft, contentDescription = "返回") }
             Column(Modifier.weight(1f)) {
-                Text(title, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
+                Text(title, style = accentTitle(MaterialTheme.typography.headlineSmall), fontWeight = FontWeight.Bold)
                 if (sub.isNotEmpty()) Text(sub, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
         }
@@ -4317,14 +4618,14 @@ private fun DataScreen(
                         Column(Modifier.weight(1f)) {
                             Text("背单词复习提醒", fontWeight = FontWeight.SemiBold)
                         }
-                        Switch(checked = reviewEnabled, onCheckedChange = { setReminder(ReminderScheduler.KIND_REVIEW, it) })
+                        AccentSwitch(checked = reviewEnabled, onCheckedChange = { setReminder(ReminderScheduler.KIND_REVIEW, it) })
                     }
                     HorizontalDivider()
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Column(Modifier.weight(1f)) {
                             Text("记账提醒", fontWeight = FontWeight.SemiBold)
                         }
-                        Switch(checked = expenseEnabled, onCheckedChange = { setReminder(ReminderScheduler.KIND_EXPENSE, it) })
+                        AccentSwitch(checked = expenseEnabled, onCheckedChange = { setReminder(ReminderScheduler.KIND_EXPENSE, it) })
                     }
                     HorizontalDivider()
                     Row(verticalAlignment = Alignment.CenterVertically) {
@@ -4360,7 +4661,7 @@ private fun DataScreen(
                             InfoTip("只读微信、支付宝、云闪付的付款通知，取金额和商家。退款、收款、转账、红包不记；聊天和其他 App 的通知不读，什么都不上传。")
                         }
                         if (hasAccess) {
-                            Switch(checked = autoOn, onCheckedChange = { autoOn = it; AutoBook.setEnabled(ctx, it) })
+                            AccentSwitch(checked = autoOn, onCheckedChange = { autoOn = it; AutoBook.setEnabled(ctx, it) })
                         } else {
                             TextButton(onClick = { runCatching { ctx.startActivity(AutoBook.accessSettingsIntent(ctx)) } }) { Text("去开启") }
                         }
@@ -4372,7 +4673,7 @@ private fun DataScreen(
                                 Text("入账前先问我", fontWeight = FontWeight.SemiBold)
                                 InfoTip("打开：付款后弹一条通知，点「入账」才记，也能换分类或忽略。关掉：直接记一笔。")
                             }
-                            Switch(checked = askFirst, onCheckedChange = { askFirst = it; AutoBook.setAskFirst(ctx, it) })
+                            AccentSwitch(checked = askFirst, onCheckedChange = { askFirst = it; AutoBook.setAskFirst(ctx, it) })
                         }
                         HorizontalDivider()
                         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -4416,7 +4717,7 @@ private fun DataScreen(
                         Column(Modifier.weight(1f)) {
                             Text("跟随系统", fontWeight = FontWeight.SemiBold)
                         }
-                        Switch(
+                        AccentSwitch(
                             checked = themeMode == ThemeMode.SYSTEM,
                             onCheckedChange = { on -> onThemeChange(if (on) ThemeMode.SYSTEM else if (darkNow) ThemeMode.DARK else ThemeMode.LIGHT) }
                         )
@@ -4426,7 +4727,7 @@ private fun DataScreen(
                         Column(Modifier.weight(1f)) {
                             Text("磨砂玻璃", fontWeight = FontWeight.SemiBold)
                         }
-                        Switch(checked = glassOn, onCheckedChange = onGlassChange)
+                        AccentSwitch(checked = glassOn, onCheckedChange = onGlassChange)
                     }
                     Spacer(Modifier.height(12.dp))
                     Row(verticalAlignment = Alignment.CenterVertically) {
@@ -4450,15 +4751,25 @@ private fun DataScreen(
                         PaletteChip(
                             label = "自定义",
                             dotColor = Color(customColor),
-                            selected = paletteId == PaletteId.CUSTOM
+                            dotBrush = if (paletteId == PaletteId.CUSTOM_GRADIENT) Brush.linearGradient(listOf(Color(customGradient.first), Color(customGradient.second))) else null,
+                            selected = paletteId == PaletteId.CUSTOM || paletteId == PaletteId.CUSTOM_GRADIENT
                         ) { showColorPicker = true }
+                    }
+                    Spacer(Modifier.height(12.dp))
+                    Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                        GRADIENT_PALETTES.forEach { g ->
+                            GradientSwatch(g, selected = paletteId == g.id) { onPaletteChange(g.id) }
+                        }
                     }
                     if (showColorPicker) {
                         CustomColorSheet(
                             initial = customColor,
+                            initialGradient = customGradient,
+                            startInGradient = paletteId == PaletteId.CUSTOM_GRADIENT,
                             dark = darkNow,
                             onDismiss = { showColorPicker = false },
-                            onApply = { c -> onCustomColor(c); showColorPicker = false; onMessage("主题色已换好") }
+                            onApply = { c -> onCustomColor(c); showColorPicker = false; onMessage("主题色已换好") },
+                            onApplyGradient = { a, b -> onCustomGradient(a, b); showColorPicker = false; onMessage("主题色已换好") }
                         )
                     }
                 }
@@ -4517,7 +4828,7 @@ private fun DataScreen(
                 }
                 Spacer(Modifier.width(14.dp))
                 Column(Modifier.weight(1f)) {
-                    Text(nickname, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
+                    Text(nickname, style = accentTitle(MaterialTheme.typography.headlineSmall), fontWeight = FontWeight.Bold)
                 }
             }
         }
@@ -4548,7 +4859,7 @@ private fun DataScreen(
                             onMessage(r.fold({ "已备份到${com.swenhao10.localfirst.data.AutoBackup.locationLabel()}" }, { "备份失败：${it.message ?: "未知错误"}" }))
                         }
                     }) { Text("立即备份") }
-                    Switch(checked = autoBackupOn, onCheckedChange = { autoBackupOn = it; com.swenhao10.localfirst.data.AutoBackup.setEnabled(context, it) })
+                    AccentSwitch(checked = autoBackupOn, onCheckedChange = { autoBackupOn = it; com.swenhao10.localfirst.data.AutoBackup.setEnabled(context, it) })
                 }
             }
             OutlinedButton(
@@ -5079,7 +5390,8 @@ private fun UpdateDialog(onDismiss: () -> Unit) {
                     "latest" -> Text("当前 v${i?.versionName ?: ""} 就是最新的。")
                     "found" -> Text(i?.notes?.ifBlank { "修复和改进" } ?: "", style = MaterialTheme.typography.bodyMedium)
                     "downloading" -> {
-                        LinearProgressIndicator(progress = { progress }, modifier = Modifier.fillMaxWidth())
+                        if (LocalAccent.current != null) AccentProgress(progress = { progress }, modifier = Modifier.fillMaxWidth().height(4.dp).clip(RoundedCornerShape(50)), trackColor = androidx.compose.material3.ProgressIndicatorDefaults.linearTrackColor)
+                        else LinearProgressIndicator(progress = { progress }, modifier = Modifier.fillMaxWidth())
                         Text("${(progress * 100).toInt()}%", style = MaterialTheme.typography.labelMedium)
                     }
                     "needPerm" -> Text("在系统设置里允许「知行」安装应用，回来再点「安装」。")

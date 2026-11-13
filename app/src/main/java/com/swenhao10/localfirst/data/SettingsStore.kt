@@ -91,6 +91,16 @@ object SettingsStore {
         prefs(context).edit().putInt("theme_custom_color", argb).apply()
     }
 
+    /** 自定义渐变主题色（起点, 终点 ARGB），选「自定义渐变」时用。 */
+    fun getCustomGradient(context: Context): Pair<Int, Int> {
+        val p = prefs(context)
+        return p.getInt("theme_custom_grad_start", 0xFFDDFFC2.toInt()) to p.getInt("theme_custom_grad_end", 0xFFEEE1FF.toInt())
+    }
+
+    fun setCustomGradient(context: Context, start: Int, end: Int) {
+        prefs(context).edit().putInt("theme_custom_grad_start", start).putInt("theme_custom_grad_end", end).apply()
+    }
+
     /** 自定义背景图（本机文件路径），空 = 默认渐变。 */
     fun getBackground(context: Context): String? =
         prefs(context).getString("bg_image", null)?.takeIf { it.isNotBlank() }
@@ -181,6 +191,8 @@ object PaletteId {
     const val ORANGE = "orange"
     const val PINK = "pink"
     const val CUSTOM = "custom"
+    /** 自定义渐变；预设渐变的 id 是 "grad_1".."grad_8"。 */
+    const val CUSTOM_GRADIENT = "custom_grad"
 
     val ALL = listOf(GREEN, BLUE, PURPLE, ORANGE, PINK)
 
@@ -189,7 +201,7 @@ object PaletteId {
         PURPLE -> "紫罗兰"
         ORANGE -> "暖橙"
         PINK -> "樱粉"
-        CUSTOM -> "自定义"
+        CUSTOM, CUSTOM_GRADIENT -> "自定义"
         else -> "青绿"
     }
 }

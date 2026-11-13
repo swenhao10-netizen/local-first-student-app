@@ -1,4 +1,4 @@
-// 移植自 github.com/Kyant0/AndroidLiquidGlass（catalog 示例，tag 1.0.0），Apache License 2.0。只改了包名和配色参数。
+// 移植自 github.com/Kyant0/AndroidLiquidGlass（catalog 示例，tag 1.0.0），Apache License 2.0。只改了包名和配色参数（加了渐变 tintBrush）。
 package com.swenhao10.localfirst.ui.liquid
 
 import androidx.compose.foundation.LocalIndication
@@ -14,6 +14,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.BlendMode
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.isSpecified
 import androidx.compose.ui.semantics.Role
@@ -40,6 +41,7 @@ fun LiquidButton(
     isInteractive: Boolean = true,
     tint: Color = Color.Unspecified,
     surfaceColor: Color = Color.Unspecified,
+    tintBrush: Brush? = null,
     content: @Composable RowScope.() -> Unit
 ) {
     val animationScope = rememberCoroutineScope()
@@ -89,7 +91,10 @@ fun LiquidButton(
                     null
                 },
                 onDrawSurface = {
-                    if (tint.isSpecified) {
+                    if (tintBrush != null) {
+                        drawRect(tintBrush, blendMode = BlendMode.Hue)
+                        drawRect(tintBrush, alpha = 0.75f)
+                    } else if (tint.isSpecified) {
                         drawRect(tint, blendMode = BlendMode.Hue)
                         drawRect(tint.copy(alpha = 0.75f))
                     }
