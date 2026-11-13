@@ -51,7 +51,10 @@ object Motion {
     fun <T> state(ms: Int = STATE, delay: Int = 0): TweenSpec<T> = tween(ms, delayMillis = delay, easing = EaseOut)
 }
 
-/** 系统「移除动画」（开发者选项里动画时长缩放 = 0，或无障碍里的移除动画）时为 true。 */
+/**
+ * 系统「移除动画」时为 true：只认 ANIMATOR_DURATION_SCALE 恰好等于 0（读不到时默认 1 = 有动画）。
+ * 0.5x / 1.5x 之类都不算减弱；默认值 false = 动画照常放。
+ */
 val LocalReduceMotion = staticCompositionLocalOf { false }
 
 @Composable
@@ -70,13 +73,13 @@ fun <T> motion(spec: FiniteAnimationSpec<T>): FiniteAnimationSpec<T> =
     if (LocalReduceMotion.current) snap() else spec
 
 /**
- * 按下缩放：按下 100ms ease-out 缩到 [pressed]，松手弹簧回去（不回弹）。
- * 整行用 0.985，小控件用 0.97。[haptic] 为 true 时按下给一次轻触感。
+ * 按下缩放：按下用快弹簧缩到 [pressed]，松手带一点点回弹弹回去。
+ * 整行用 0.97，小控件用默认 0.94。[haptic] 为 true 时按下给一次轻触感。
  * 减弱动画时不缩放。
  */
 fun Modifier.pressScale(
     source: MutableInteractionSource,
-    pressed: Float = 0.97f,
+    pressed: Float = 0.94f,
     haptic: Boolean = false
 ): Modifier = composed {
     val isPressed by source.collectIsPressedAsState()
@@ -89,7 +92,7 @@ fun Modifier.pressScale(
     }
     val s by animateFloatAsState(
         targetValue = if (isPressed && !reduce) pressed else 1f,
-        animationSpec = if (isPressed) tween(Motion.PRESS, easing = Motion.EaseOut) else spring(dampingRatio = 1f, stiffness = 600f),
+        animationSpec = if (isPressed) spring(dampingRatio = 0.9f, stiffness = 1200f) else spring(dampingRatio = 0.6f, stiffness = 500f),
         label = "press"
     )
     this.graphicsLayer { scaleX = s; scaleY = s }

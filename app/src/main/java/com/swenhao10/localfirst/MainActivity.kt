@@ -247,6 +247,7 @@ import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.Videocam
 import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.animate
 import androidx.compose.foundation.gestures.Orientation
 import androidx.compose.foundation.gestures.draggable
 import androidx.compose.foundation.gestures.rememberDraggableState
@@ -267,6 +268,12 @@ import com.swenhao10.localfirst.autobook.AutoBook
 import com.swenhao10.localfirst.autobook.Payment
 import androidx.lifecycle.compose.LifecycleResumeEffect
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.compositionLocalOf
+import androidx.compose.material3.LocalContentColor
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.unit.Dp
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -380,65 +387,94 @@ private fun TipPill(text: String, actionLabel: String? = null, onAction: () -> U
 }
 
 /**
- * 向右滑动移除：滑过三分之一，或者往右甩一下（速度 > 1000px/s）就删；不够就带着手指速度弹回。
- * 越过阈值那一刻给一次触感，图标轻轻弹一下。
+ * 向右滑动移除：拖过宽度的 35%，或者往右甩（> 800dp/s）就删；不够就弹簧弹回。
+ * 拖动时位移只在 graphicsLayer 里读，不触发重组；红色底也在 draw 阶段按进度画。
+ * 越过阈值那一刻给一次触感。拖动期间卡片改画便宜的半透明底（不做实时模糊），松手落定后再恢复玻璃。
  */
 @Composable
 private fun SwipeToRemove(onRemove: () -> Unit, content: @Composable () -> Unit) {
     val scope = rememberCoroutineScope()
-    val offset = remember { Animatable(0f) }
-    var widthPx by remember { mutableStateOf(1f) }
-    val threshold = widthPx * 0.33f
-    val progress = (offset.value / threshold).coerceIn(0f, 1f)
-    val red = MaterialTheme.colorScheme.error
-    val haptic = LocalHapticFeedback.current
+    val density = LocalDensity.current
+    val flingPx = with(density) { 800.dp.toPx() }
+    var offsetX by remember { mutableFloatStateOf(0f) }
+    var widthPx by remember { mutableFloatStateOf(1f) }
     var armed by remember { mutableStateOf(false) }
+    var moving by remember { mutableStateOf(false) }
+    var removed by remember { mutableStateOf(false) }
+    var anim by remember { mutableStateOf<Job?>(null) }
+    val red = MaterialTheme.colorScheme.error
+    val onRed = MaterialTheme.colorScheme.onError
+    val haptic = LocalHapticFeedback.current
+    val reduce = LocalReduceMotion.current
     val iconScale by animateFloatAsState(
         if (armed) 1.15f else 1f,
-        motion(spring(dampingRatio = 0.5f, stiffness = 600f)),
+        motion(spring(dampingRatio = 0.6f, stiffness = 600f)),
         label = "swipeIcon"
     )
+    val shape = RoundedCornerShape(18.dp)
     Box(Modifier.fillMaxWidth().onSizeChanged { widthPx = it.width.toFloat().coerceAtLeast(1f) }) {
-        if (offset.value > 0f) {
-            Box(
-                Modifier.matchParentSize().clip(RoundedCornerShape(18.dp)).background(red.copy(alpha = 0.25f + 0.6f * progress)).padding(start = 22.dp),
-                contentAlignment = Alignment.CenterStart
-            ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(
-                        Icons.Default.Delete, null, tint = MaterialTheme.colorScheme.onError,
-                        modifier = Modifier.graphicsLayer { scaleX = iconScale; scaleY = iconScale }
-                    )
-                    Spacer(Modifier.width(8.dp))
-                    Text(if (progress >= 1f) "松手移出" else "移出生词本", color = MaterialTheme.colorScheme.onError, fontWeight = FontWeight.SemiBold)
+        // 背后的红底：只有卡片挪开时才看得到；颜色深浅按进度在 draw 阶段算
+        Box(
+            Modifier
+                .matchParentSize()
+                .graphicsLayer { alpha = if (offsetX > 0.5f) 1f else 0f }
+                .clip(shape)
+                .drawBehind {
+                    val p = (offsetX / (widthPx * 0.35f)).coerceIn(0f, 1f)
+                    drawRect(red.copy(alpha = 0.25f + 0.6f * p))
                 }
+                .padding(start = 22.dp),
+            contentAlignment = Alignment.CenterStart
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(
+                    Icons.Default.Delete, null, tint = onRed,
+                    modifier = Modifier.graphicsLayer { scaleX = iconScale; scaleY = iconScale }
+                )
+                Spacer(Modifier.width(8.dp))
+                Text(if (armed) "松手移出" else "移出生词本", color = onRed, fontWeight = FontWeight.SemiBold)
             }
         }
         Box(
             Modifier
-                .offset { IntOffset(offset.value.roundToInt(), 0) }
+                .graphicsLayer { translationX = offsetX }
                 .draggable(
                     orientation = Orientation.Horizontal,
+                    enabled = !removed,
+                    onDragStarted = {
+                        anim?.cancel()
+                        moving = true
+                    },
                     state = rememberDraggableState { d ->
-                        val next = (offset.value + d).coerceIn(0f, widthPx)
-                        val now = next >= threshold
+                        val next = (offsetX + d).coerceIn(0f, widthPx)
+                        offsetX = next
+                        val now = next >= widthPx * 0.35f
                         if (now != armed) {
                             armed = now
-                            haptic.performHapticFeedback(HapticFeedbackType.GestureThresholdActivate)
+                            if (now) haptic.performHapticFeedback(HapticFeedbackType.GestureThresholdActivate)
                         }
-                        scope.launch { offset.snapTo(next) }
                     },
                     onDragStopped = { v ->
-                        if (v > 1000f || offset.value >= threshold) {
-                            offset.animateTo(widthPx, tween(180, easing = Motion.EaseOut), initialVelocity = v)
-                            onRemove()
-                        } else {
-                            armed = false
-                            offset.animateTo(0f, spring(dampingRatio = 0.8f, stiffness = 400f), initialVelocity = v)
+                        val go = offsetX >= widthPx * 0.35f || v > flingPx
+                        anim = scope.launch {
+                            if (go) {
+                                removed = true
+                                if (!armed) haptic.performHapticFeedback(HapticFeedbackType.GestureThresholdActivate)
+                                if (reduce) offsetX = widthPx
+                                else animate(offsetX, widthPx, initialVelocity = v.coerceAtLeast(0f), animationSpec = spring(dampingRatio = 1f, stiffness = 700f, visibilityThreshold = 4f)) { value, _ -> offsetX = value }
+                                onRemove()
+                            } else {
+                                armed = false
+                                if (reduce) offsetX = 0f
+                                else animate(offsetX, 0f, initialVelocity = v, animationSpec = spring(dampingRatio = 0.85f, stiffness = 450f, visibilityThreshold = 0.5f)) { value, _ -> offsetX = value }
+                                moving = false
+                            }
                         }
                     }
                 )
-        ) { content() }
+        ) {
+            CompositionLocalProvider(LocalGlassCheap provides moving) { content() }
+        }
     }
 }
 
@@ -458,10 +494,12 @@ private fun ZhAlertDialog(
     confirmButton: @Composable () -> Unit = {},
     dismissButton: (@Composable () -> Unit)? = null,
     title: (@Composable () -> Unit)? = null,
+    scrollText: Boolean = true,
+    horizontalPadding: Dp = 22.dp,
     text: (@Composable () -> Unit)? = null
 ) {
     val host = LocalOverlay.current
-    val panel: @Composable (MutableTransitionState<Boolean>) -> Unit = { vis -> ZhSheet(vis, onDismissRequest, confirmButton, dismissButton, title, text) }
+    val panel: @Composable (MutableTransitionState<Boolean>) -> Unit = { vis -> ZhSheet(vis, onDismissRequest, confirmButton, dismissButton, title, text, scrollText, horizontalPadding) }
     if (host == null) {
         val vis = remember { MutableTransitionState(false).apply { targetState = true } }
         Dialog(onDismissRequest = onDismissRequest, properties = DialogProperties(usePlatformDefaultWidth = false)) { panel(vis) }
@@ -487,9 +525,20 @@ private fun ZhSheet(
     confirmButton: @Composable () -> Unit,
     dismissButton: (@Composable () -> Unit)?,
     title: (@Composable () -> Unit)?,
-    text: (@Composable () -> Unit)?
+    text: (@Composable () -> Unit)?,
+    scrollText: Boolean = true,
+    horizontalPadding: Dp = 22.dp
 ) {
     val dark = MaterialTheme.colorScheme.background.red < 0.5f
+    // 弹层画在 Scaffold 外面，LocalContentColor 默认是黑色——没写颜色的字在深色玻璃上就成了黑字。
+    // 这里统一给面板里的字定颜色：深色 = 白字，次要字 = 白色 75%；浅色 = 主题的深色字。
+    val baseScheme = MaterialTheme.colorScheme
+    val sheetScheme = if (dark) baseScheme.copy(
+        onSurface = Color.White,
+        onBackground = Color.White,
+        onSurfaceVariant = Color.White.copy(alpha = .75f)
+    ) else baseScheme
+    val sheetFg = if (dark) Color.White else baseScheme.onSurface
     val glassOn = LocalBackdrop.current != null
     val reduce = LocalReduceMotion.current
     val open = visible.targetState
@@ -510,10 +559,12 @@ private fun ZhSheet(
     ) {
         AnimatedVisibility(
             visibleState = visible,
-            enter = if (reduce) fadeIn(tween(Motion.SMALL)) else slideInVertically(spring(dampingRatio = 1f, stiffness = 500f)) { it } + fadeIn(tween(120)),
+            enter = if (reduce) fadeIn(tween(Motion.SMALL)) else slideInVertically(spring(dampingRatio = 0.85f, stiffness = 400f, visibilityThreshold = IntOffset.VisibilityThreshold)) { it } + fadeIn(tween(160)),
             exit = if (reduce) fadeOut(tween(120)) else slideOutVertically(tween(180, easing = Motion.EaseOut)) { it } + fadeOut(tween(120))
         ) {
             val shape = RoundedCornerShape(30.dp)
+            MaterialTheme(colorScheme = sheetScheme) {
+            CompositionLocalProvider(LocalContentColor provides sheetFg) {
             Column(
                 Modifier
                     .padding(horizontal = 12.dp, vertical = 16.dp)
@@ -524,12 +575,12 @@ private fun ZhSheet(
                     .onSizeChanged { panelH = it.height.toFloat().coerceAtLeast(1f) }
                     .offset { IntOffset(0, dragY.value.roundToInt()) }
                     .then(
-                        if (glassOn) Modifier.glass(shape, if (dark) Color(0x8C182120) else Color(0xA6FFFFFF), blurDp = 24f, lensDp = 18f)
+                        if (glassOn) Modifier.glass(shape, if (dark) Color(0xA6141B1A) else Color(0xC7FFFFFF), blurDp = 24f, lensDp = 18f)
                         else Modifier.clip(shape).background(if (dark) Color(0xF2161D1C) else Color(0xF7FBFDFC))
                     )
                     .border(1.dp, Color.White.copy(alpha = if (dark) .14f else .5f), shape)
                     .clickable(interactionSource = remember { MutableInteractionSource() }, indication = null) {}
-                    .padding(horizontal = 22.dp)
+                    .padding(horizontal = horizontalPadding)
                     .padding(bottom = 14.dp)
             ) {
                 // 拖动条：往下拖跟手，往上拖有阻力；松手看速度和距离决定关还是弹回
@@ -565,7 +616,7 @@ private fun ZhSheet(
                     Spacer(Modifier.height(10.dp))
                 }
                 if (text != null) {
-                    Box(Modifier.weight(1f, fill = false).verticalScroll(rememberScrollState())) {
+                    Box(Modifier.weight(1f, fill = false).then(if (scrollText) Modifier.verticalScroll(rememberScrollState()) else Modifier)) {
                         ProvideTextStyle(MaterialTheme.typography.bodyMedium) { text() }
                     }
                 }
@@ -573,6 +624,8 @@ private fun ZhSheet(
                     dismissButton?.invoke()
                     confirmButton()
                 }
+            }
+            }
             }
         }
     }
@@ -752,6 +805,8 @@ private val LocalGlass = staticCompositionLocalOf { false }
 private val LocalBackdrop = staticCompositionLocalOf<LayerBackdrop?> { null }
 /** 弹窗宿主：ZhAlertDialog 把自己挂到这里，画在主界面最上层。 */
 private val LocalOverlay = staticCompositionLocalOf<androidx.compose.runtime.snapshots.SnapshotStateMap<Any, OverlayEntry>?> { null }
+/** 卡片正在被拖动：GlassCard 临时画半透明实底，不做实时模糊/折射（每帧重算模糊会卡）。 */
+private val LocalGlassCheap = compositionLocalOf { false }
 /** 自定义背景图路径；null = 默认渐变。 */
 private val LocalBgPath = staticCompositionLocalOf<String?> { null }
 
@@ -798,9 +853,15 @@ private fun GlassCard(
     } else {
         val scheme = MaterialTheme.colorScheme
         val plain = color == scheme.surface || color == scheme.surfaceVariant || color == scheme.background
+        val cheap = LocalGlassCheap.current
+        val darkBg = scheme.background.red < 0.5f
         Column(
             modifier
-                .glass(shape, if (plain) null else color.copy(alpha = 0.40f))
+                .then(
+                    if (cheap) Modifier.clip(shape).background(if (darkBg) Color(0xE61E2927) else Color(0xEBFFFFFF))
+                        .then(if (plain) Modifier else Modifier.background(color.copy(alpha = 0.40f)))
+                    else Modifier.glass(shape, if (plain) null else color.copy(alpha = 0.40f))
+                )
                 .then(if (onClick != null) Modifier.clip(shape).clickable(onClick = onClick) else Modifier),
             content = content
         )
@@ -932,7 +993,7 @@ private fun warnTone(): Color =
 private fun Color.luminanceApprox(): Float = 0.2126f * red + 0.7152f * green + 0.0722f * blue
 
 /**
- * 会变的数字：只滚动变了的那几位（新数字从下往上进来，200ms），没变的位不动，停住后不再闪。
+ * 会变的数字：只滚动变了的那几位（新数字从下往上进来，320ms），没变的位不动，停住后不再闪。
  * 按“从右数第几位”对齐，个位永远对着个位。减弱动画时只淡入淡出。
  */
 @Composable
@@ -953,8 +1014,8 @@ private fun RollingText(
                             fadeIn(tween(Motion.SMALL)) togetherWith fadeOut(tween(90)) using SizeTransform(clip = false)
                         } else {
                             val up = targetState > initialState
-                            (slideInVertically(tween(Motion.STATE, easing = Motion.EaseOut)) { if (up) it else -it } + fadeIn(tween(Motion.STATE)))
-                                .togetherWith(slideOutVertically(tween(Motion.STATE, easing = Motion.EaseOut)) { if (up) -it else it } + fadeOut(tween(Motion.EXIT)))
+                            (slideInVertically(tween(320, easing = Motion.EaseOut)) { if (up) it else -it } + fadeIn(tween(260)))
+                                .togetherWith(slideOutVertically(tween(320, easing = Motion.EaseOut)) { if (up) -it else it } + fadeOut(tween(200)))
                                 .using(SizeTransform(clip = false))
                         }
                     },
@@ -1185,6 +1246,7 @@ private fun LocalFirstApp(db: AppDatabase) {
         val overlays = remember { mutableStateMapOf<Any, OverlayEntry>() }
         CompositionLocalProvider(
             LocalReduceMotion provides reduceMotion,
+            LocalContentColor provides MaterialTheme.colorScheme.onBackground,
             LocalOverlay provides overlays,
             LocalGlass provides glassOn,
             LocalBackdrop provides (if (glassOn) layerBackdrop else null),
@@ -1219,10 +1281,16 @@ private fun LocalFirstApp(db: AppDatabase) {
                 }
             }
         ) { padding ->
-            // Tab 是平级的：只做 150ms 淡入，不缩放、不滑动；每个 Tab 的滚动位置和子页面状态切回来还在
+            // Tab 是平级的：淡入 + 从下方 8dp 轻轻落位，不缩放；每个 Tab 的滚动位置和子页面状态切回来还在
+            val tabShift = with(LocalDensity.current) { 8.dp.roundToPx() }
             AnimatedContent(
                 targetState = tab,
-                transitionSpec = { fadeIn(tween(Motion.SMALL, easing = Motion.EaseOut)) togetherWith fadeOut(tween(90)) using SizeTransform(clip = false) },
+                transitionSpec = {
+                    if (reduceMotion) fadeIn(tween(Motion.SMALL)) togetherWith fadeOut(tween(90)) using SizeTransform(clip = false)
+                    else (fadeIn(tween(220, easing = Motion.EaseOut)) + slideInVertically(spring(dampingRatio = 1f, stiffness = 500f, visibilityThreshold = IntOffset.VisibilityThreshold)) { tabShift })
+                        .togetherWith(fadeOut(tween(100)))
+                        .using(SizeTransform(clip = false))
+                },
                 label = "tab-transition"
             ) { selected ->
                 tabStates.SaveableStateProvider(selected.name) {
@@ -1473,12 +1541,44 @@ private fun RecordScreen(
                 override fun isSelectableDate(utcTimeMillis: Long) = utcFmt.format(Date(utcTimeMillis)) in recordDays
             }
         )
-        androidx.compose.material3.DatePickerDialog(
+        // 跟其它弹层同一个玻璃面板；面板里的日历自己有分页/年份列表，所以不再套滚动（scrollText = false）
+        val glassOn = LocalBackdrop.current != null
+        val darkBg = MaterialTheme.colorScheme.background.red < 0.5f
+        val fg = if (darkBg) Color.White else MaterialTheme.colorScheme.onSurface
+        val primary = MaterialTheme.colorScheme.primary
+        val onPrimary = MaterialTheme.colorScheme.onPrimary
+        val pickerColors = androidx.compose.material3.DatePickerDefaults.colors(
+            containerColor = Color.Transparent,
+            titleContentColor = fg.copy(alpha = .75f),
+            headlineContentColor = fg,
+            weekdayContentColor = fg.copy(alpha = .75f),
+            subheadContentColor = fg.copy(alpha = .75f),
+            navigationContentColor = fg,
+            yearContentColor = fg,
+            disabledYearContentColor = fg.copy(alpha = .3f),
+            currentYearContentColor = primary,
+            selectedYearContentColor = onPrimary,
+            selectedYearContainerColor = primary,
+            dayContentColor = fg,
+            disabledDayContentColor = fg.copy(alpha = if (glassOn || darkBg) .28f else .32f),
+            selectedDayContentColor = onPrimary,
+            disabledSelectedDayContentColor = onPrimary.copy(alpha = .5f),
+            selectedDayContainerColor = primary,
+            disabledSelectedDayContainerColor = primary.copy(alpha = .3f),
+            todayContentColor = primary,
+            todayDateBorderColor = primary,
+            dividerColor = fg.copy(alpha = .12f)
+        )
+        ZhAlertDialog(
             onDismissRequest = { showDatePick = false },
+            title = { Text("跳到哪一天", modifier = Modifier.padding(start = 16.dp)) },
+            scrollText = false,
+            horizontalPadding = 6.dp,
             confirmButton = {
-                TextButton(onClick = {
+                Button(
+                    onClick = {
                     showDatePick = false
-                    val picked = pickState.selectedDateMillis?.let { utcFmt.format(Date(it)) } ?: return@TextButton
+                    val picked = pickState.selectedDateMillis?.let { utcFmt.format(Date(it)) } ?: return@Button
                     // 算出那一天的标题在列表里是第几项：header 占 1，之后每天 = 1 个标题 + 当天条数
                     var idx = 1
                     var target = -1
@@ -1496,11 +1596,21 @@ private fun RecordScreen(
                         // 落地后那一天的标题闪一下，告诉你到了
                         targetKey?.let { flash = it to (flash?.second ?: 0) + 1 }
                     }
-                }) { Text("跳过去") }
+                    },
+                    enabled = pickState.selectedDateMillis != null,
+                    shape = RoundedCornerShape(50),
+                    colors = ButtonDefaults.buttonColors(containerColor = primary, contentColor = onPrimary),
+                    modifier = Modifier.padding(end = 10.dp)
+                ) { Text("跳过去", fontWeight = FontWeight.SemiBold) }
             },
-            dismissButton = { TextButton(onClick = { showDatePick = false }) { Text("取消") } }
+            dismissButton = { TextButton(onClick = { showDatePick = false }) { Text("取消", color = fg.copy(alpha = .8f)) } }
         ) {
-            androidx.compose.material3.DatePicker(state = pickState, title = { Text("跳到哪一天", modifier = Modifier.padding(start = 24.dp, top = 16.dp)) }, showModeToggle = false)
+            androidx.compose.material3.DatePicker(
+                state = pickState,
+                colors = pickerColors,
+                title = null,
+                showModeToggle = false
+            )
         }
     }
     LazyColumn(modifier.fillMaxSize().padding(horizontal = 16.dp), state = listState) {
@@ -2894,14 +3004,14 @@ private fun WordsScreen(
                     horizontalAlignment = Alignment.CenterHorizontally
                 ) {
                     Spacer(Modifier.height(36.dp))
-                    // 换词：卡片不动，只换里面的词，新词从右边 1/6 处进来
+                    // 换词：卡片不动，只换里面的词，新词从右边 40% 处滑进来、旧词往左滑出，配合淡入淡出
                     AnimatedContent(
                         targetState = lite,
                         contentKey = { it.headword },
                         transitionSpec = {
                             if (reduceMotion) fadeIn(tween(Motion.SMALL)) togetherWith fadeOut(tween(100))
-                            else (slideInHorizontally(tween(Motion.STATE, easing = Motion.EaseOut)) { it / 6 } + fadeIn(tween(Motion.STATE)))
-                                .togetherWith(slideOutHorizontally(tween(Motion.EXIT, easing = Motion.EaseOut)) { -it / 6 } + fadeOut(tween(Motion.EXIT)))
+                            else (slideInHorizontally(spring(dampingRatio = 0.9f, stiffness = 420f, visibilityThreshold = IntOffset.VisibilityThreshold)) { it * 2 / 5 } + fadeIn(tween(240, easing = Motion.EaseOut)))
+                                .togetherWith(slideOutHorizontally(tween(220, easing = Motion.EaseOut)) { -it * 2 / 5 } + fadeOut(tween(180)))
                                 .using(SizeTransform(clip = false))
                         },
                         label = "word"
@@ -4334,7 +4444,7 @@ private fun MineRow(icon: ImageVector, title: String, sub: String, onClick: () -
     // 整行只缩到 0.985，避免整行抖动
     val src = remember { MutableInteractionSource() }
     Row(
-        Modifier.fillMaxWidth().pressScale(src, pressed = 0.985f)
+        Modifier.fillMaxWidth().pressScale(src, pressed = 0.97f)
             .clickable(interactionSource = src, indication = androidx.compose.foundation.LocalIndication.current, onClick = onClick)
             .padding(horizontal = 18.dp, vertical = 14.dp),
         verticalAlignment = Alignment.CenterVertically
