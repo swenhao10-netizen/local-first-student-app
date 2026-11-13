@@ -5168,7 +5168,8 @@ private fun StickerBoardEditor(db: AppDatabase, onMessage: (String) -> Unit, mod
                         val art by produceState<androidx.compose.ui.graphics.ImageBitmap?>(null, s.artKey, basePx) {
                             value = withContext(Dispatchers.IO) { runCatching { com.swenhao10.localfirst.widget.StickerArt.renderSticker(s, basePx).asImageBitmap() }.getOrNull() }
                         }
-                        val a = art ?: return@key
+                        val aOrNull = art
+                        if (aOrNull != null) { val a: androidx.compose.ui.graphics.ImageBitmap = aOrNull
                         val isSel = selected == s.id
                         val lift by animateFloatAsState(if (isSel) 1.04f else 1f, spring(dampingRatio = 0.7f, stiffness = 500f), label = "lift")
                         Box(
@@ -5207,6 +5208,7 @@ private fun StickerBoardEditor(db: AppDatabase, onMessage: (String) -> Unit, mod
                         ) {
                             Image(a, contentDescription = null, modifier = Modifier.fillMaxSize())
                         }
+                    }
                     }
                 }
                 // 选中的贴纸：右下角转/缩把手 + 上方删除
