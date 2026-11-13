@@ -34,6 +34,7 @@ import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.calculatePan
 import androidx.compose.foundation.gestures.calculateZoom
+import androidx.compose.foundation.gestures.calculateRotation
 import androidx.compose.ui.input.pointer.positionChanged
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
@@ -193,6 +194,10 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.shadow
+import androidx.compose.runtime.produceState
+import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.automirrored.filled.Undo
+import androidx.compose.ui.input.pointer.positionChange
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.CornerRadius
@@ -287,10 +292,10 @@ import java.util.Calendar
 import java.util.Locale
 
 class MainActivity : ComponentActivity() {
-    // 离开 App 时把桌面毛毡板刷新一下（新记录、刚背的词、待复习数）
+    // 离开 App 时把桌面贴纸板刷新一下
     override fun onStop() {
         super.onStop()
-        com.swenhao10.localfirst.widget.FeltWidgetBase.refreshAll(this)
+        com.swenhao10.localfirst.widget.StickerWidgetBase.refreshAll(this)
         // 离开知行就自动备份一份到「文档/知行」（数据没变就跳过）
         com.swenhao10.localfirst.data.AutoBackup.schedule(this)
     }
@@ -4183,7 +4188,7 @@ private fun DataScreen(
             onMessage(result.fold({ "数据已导入" }, { "导入失败：${it.message ?: "未知错误"}" }))
         }
     }
-    var page by rememberSaveable { mutableStateOf("main") }   // main | settings | privacy | about
+    var page by rememberSaveable { mutableStateOf("main") }   // main | settings | privacy | about | board
     var showUpdate by remember { mutableStateOf(false) }
     if (showUpdate) UpdateDialog(onDismiss = { showUpdate = false })
     if (page != "main") BackHandler(enabled = LocalTabActive.current) { page = "main" }
@@ -4386,6 +4391,11 @@ private fun DataScreen(
         }
         item { Spacer(Modifier.height(88.dp)) }
     }
+    "board" -> Column(modifier.fillMaxSize().padding(horizontal = 16.dp)) {
+        SubHeader("贴纸板", "拖动摆放，两指缩放旋转；桌面可以加贴纸板小组件")
+        Spacer(Modifier.height(8.dp))
+        StickerBoardEditor(db, onMessage, Modifier.fillMaxWidth().weight(1f).padding(bottom = 96.dp))
+    }
     "about" -> LazyColumn(modifier.fillMaxSize().padding(horizontal = 20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         item { SubHeader("关于知行", "v$versionName") }
         item {
@@ -4498,6 +4508,8 @@ private fun DataScreen(
         item {
             GlassCard(color = MaterialTheme.colorScheme.surface, shape = RoundedCornerShape(20.dp)) {
                 Column(Modifier.fillMaxWidth()) {
+                    MineRow(Icons.Default.Image, "贴纸板", "把记录的照片和小便签贴在夹板上，桌面也能看") { page = "board" }
+                    HorizontalDivider(Modifier.padding(start = 70.dp), color = MaterialTheme.colorScheme.onSurface.copy(alpha = .08f))
                     MineRow(Icons.Default.Settings, "设置", "头像和昵称、通知、主题和外观") { page = "settings" }
                     HorizontalDivider(Modifier.padding(start = 70.dp), color = MaterialTheme.colorScheme.onSurface.copy(alpha = .08f))
                     MineRow(Icons.Default.Lock, "隐私说明", "平时不联网，记录只存在这台手机") { page = "privacy" }
@@ -5039,4 +5051,325 @@ private fun UpdateDialog(onDismiss: () -> Unit) {
         },
         dismissButton = closeBtn
     )
+}
+
+// ======================= 贴纸板编辑 =======================
+
+/** 贴纸板上的一个按钮：玻璃胶囊，按下缩小。 */
+@Composable
+private fun BoardButton(label: String, icon: ImageVector, enabled: Boolean = true, onClick: () -> Unit) {
+    val src = remember { MutableInteractionSource() }
+    val shape = RoundedCornerShape(50)
+    Row(
+        Modifier.pressScale(src)
+            .then(if (LocalBackdrop.current != null) Modifier.glass(shape) else Modifier.clip(shape).background(MaterialTheme.colorScheme.surfaceVariant))
+            .border(1.dp, Color.White.copy(alpha = .25f), shape)
+            .clickable(interactionSource = src, indication = null, enabled = enabled, onClick = onClick)
+            .padding(horizontal = 14.dp, vertical = 10.dp)
+            .graphicsLayer { alpha = if (enabled) 1f else .4f },
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Icon(icon, contentDescription = null, modifier = Modifier.size(18.dp), tint = MaterialTheme.colorScheme.primary)
+        Spacer(Modifier.width(6.dp))
+        Text(label, style = MaterialTheme.typography.labelLarge)
+    }
+}
+
+/**
+ * 贴纸板编辑：拖动摆放，两指缩放旋转；选中后右下角圆点单指转和缩，上面有删除。
+ * 改动 0.5 秒后自动存，并刷新桌面小组件。
+ */
+@Composable
+private fun StickerBoardEditor(db: AppDatabase, onMessage: (String) -> Unit, modifier: Modifier = Modifier) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    val haptic = LocalHapticFeedback.current
+    var board by remember { mutableStateOf(com.swenhao10.localfirst.widget.StickerStore.load(context)) }
+    val history = remember { mutableStateListOf<com.swenhao10.localfirst.widget.BoardState>() }
+    var selected by remember { mutableStateOf<Long?>(null) }
+    var showPhotos by remember { mutableStateOf(false) }
+    var noteEdit by remember { mutableStateOf<com.swenhao10.localfirst.widget.Sticker?>(null) }
+    var dirty by remember { mutableStateOf(false) }
+    fun snapshot() { history.add(board); if (history.size > 40) history.removeAt(0) }
+    fun update(id: Long, f: (com.swenhao10.localfirst.widget.Sticker) -> com.swenhao10.localfirst.widget.Sticker) {
+        board = board.copy(stickers = board.stickers.map { if (it.id == id) f(it) else it }); dirty = true
+    }
+    fun bringToFront(id: Long) {
+        val s = board.stickers.firstOrNull { it.id == id } ?: return
+        if (board.stickers.lastOrNull()?.id != id) board = board.copy(stickers = board.stickers.filter { it.id != id } + s)
+    }
+    fun add(s: com.swenhao10.localfirst.widget.Sticker) {
+        if (board.stickers.size >= 30) { onMessage("一块板最多贴 30 张"); return }
+        snapshot(); board = board.copy(stickers = board.stickers + s); selected = s.id; dirty = true
+        haptic.performHapticFeedback(HapticFeedbackType.Confirm)
+    }
+    LaunchedEffect(board) {
+        if (!dirty) return@LaunchedEffect
+        delay(500)
+        withContext(Dispatchers.IO) { com.swenhao10.localfirst.widget.StickerStore.save(context, board) }
+        com.swenhao10.localfirst.widget.StickerWidgetBase.refreshAll(context)
+    }
+
+    Column(modifier) {
+        BoxWithConstraints(
+            Modifier.fillMaxWidth().weight(1f, fill = false),
+            contentAlignment = Alignment.TopCenter
+        ) {
+            // 板子按 1:1.2 放进可用空间
+            val bw = minOf(maxWidth, maxHeight / com.swenhao10.localfirst.widget.StickerArt.ASPECT)
+            val bh = bw * com.swenhao10.localfirst.widget.StickerArt.ASPECT
+            val density = LocalDensity.current
+            val wPx = with(density) { bw.toPx() }
+            val hPx = with(density) { bh.toPx() }
+            val basePx = (wPx * com.swenhao10.localfirst.widget.StickerArt.BASE).toInt().coerceAtLeast(40)
+            Box(
+                Modifier.size(bw, bh)
+                    .pointerInput(Unit) { detectTapGestures { selected = null } }
+            ) {
+                // 板子纹理有几万个颗粒，只在换板子或尺寸变了时画一次，拖贴纸时不重画
+                val boardStyle = board.board
+                val boardImg by produceState<androidx.compose.ui.graphics.ImageBitmap?>(null, boardStyle, wPx.toInt()) {
+                    value = withContext(Dispatchers.Default) {
+                        val b = android.graphics.Bitmap.createBitmap(wPx.toInt().coerceAtLeast(1), hPx.toInt().coerceAtLeast(1), android.graphics.Bitmap.Config.ARGB_8888)
+                        com.swenhao10.localfirst.widget.StickerArt.drawBoard(android.graphics.Canvas(b), wPx, hPx, boardStyle)
+                        b.asImageBitmap()
+                    }
+                }
+                boardImg?.let { Image(it, contentDescription = null, modifier = Modifier.fillMaxSize()) }
+                if (board.stickers.isEmpty()) {
+                    Column(Modifier.align(Alignment.Center).padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                        Text("还没有贴纸", fontWeight = FontWeight.Bold, color = Color.White)
+                        Text("点下面「照片」或「便签」贴一张", style = MaterialTheme.typography.labelMedium, color = Color.White.copy(alpha = .85f))
+                    }
+                }
+                board.stickers.forEach { s ->
+                    key(s.id) {
+                        val art by produceState<androidx.compose.ui.graphics.ImageBitmap?>(null, s.artKey, basePx) {
+                            value = withContext(Dispatchers.IO) { runCatching { com.swenhao10.localfirst.widget.StickerArt.renderSticker(s, basePx).asImageBitmap() }.getOrNull() }
+                        }
+                        val a = art ?: return@key
+                        val isSel = selected == s.id
+                        val lift by animateFloatAsState(if (isSel) 1.04f else 1f, spring(dampingRatio = 0.7f, stiffness = 500f), label = "lift")
+                        Box(
+                            Modifier
+                                .offset { IntOffset((s.x * wPx - a.width / 2f).roundToInt(), (s.y * hPx - a.height / 2f).roundToInt()) }
+                                .size(with(density) { a.width.toDp() }, with(density) { a.height.toDp() })
+                                .pointerInput(s.id, wPx, hPx) {
+                                    awaitEachGesture {
+                                        val down = awaitFirstDown()
+                                        down.consume()
+                                        selected = s.id
+                                        snapshot(); bringToFront(s.id)
+                                        haptic.performHapticFeedback(HapticFeedbackType.SegmentTick)
+                                        do {
+                                            val ev = awaitPointerEvent()
+                                            val pan = ev.calculatePan()
+                                            val zoom = ev.calculateZoom()
+                                            val rot = ev.calculateRotation()
+                                            if (pan != Offset.Zero || zoom != 1f || rot != 0f) {
+                                                update(s.id) { cur ->
+                                                    cur.copy(
+                                                        x = (cur.x + pan.x / wPx).coerceIn(0.02f, 0.98f),
+                                                        y = (cur.y + pan.y / hPx).coerceIn(0.06f, 0.98f),
+                                                        scale = (cur.scale * zoom).coerceIn(0.35f, 2.6f),
+                                                        rot = cur.rot + rot
+                                                    )
+                                                }
+                                            }
+                                            ev.changes.forEach { if (it.positionChanged()) it.consume() }
+                                        } while (ev.changes.any { it.pressed })
+                                    }
+                                }
+                                .graphicsLayer {
+                                    scaleX = s.scale * lift; scaleY = s.scale * lift; rotationZ = s.rot
+                                }
+                        ) {
+                            Image(a, contentDescription = null, modifier = Modifier.fillMaxSize())
+                        }
+                    }
+                }
+                // 选中的贴纸：右下角转/缩把手 + 上方删除
+                val sel = board.stickers.firstOrNull { it.id == selected }
+                if (sel != null) {
+                    val half = basePx * sel.scale * 0.55f
+                    val rad = Math.toRadians(sel.rot.toDouble())
+                    val cx = sel.x * wPx; val cy = sel.y * hPx
+                    val hx = cx + (half * kotlin.math.cos(rad) - half * kotlin.math.sin(rad)).toFloat()
+                    val hy = cy + (half * kotlin.math.sin(rad) + half * kotlin.math.cos(rad)).toFloat()
+                    val knob = with(density) { 30.dp.toPx() }
+                    Box(
+                        Modifier
+                            .offset { IntOffset((hx - knob / 2).roundToInt(), (hy - knob / 2).roundToInt()) }
+                            .size(30.dp)
+                            .shadow(4.dp, CircleShape)
+                            .clip(CircleShape)
+                            .background(Color.White)
+                            .padding(5.dp)
+                            .clip(CircleShape)
+                            .background(MaterialTheme.colorScheme.primary)
+                            .pointerInput(sel.id, wPx, hPx) {
+                                awaitEachGesture {
+                                    val down = awaitFirstDown(); down.consume()
+                                    snapshot()
+                                    val start = board.stickers.firstOrNull { it.id == sel.id } ?: return@awaitEachGesture
+                                    val c0 = Offset(start.x * wPx, start.y * hPx)
+                                    val r0 = Math.toRadians(start.rot.toDouble())
+                                    val h0 = basePx * start.scale * 0.55f
+                                    var finger = Offset(c0.x + (h0 * kotlin.math.cos(r0) - h0 * kotlin.math.sin(r0)).toFloat(), c0.y + (h0 * kotlin.math.sin(r0) + h0 * kotlin.math.cos(r0)).toFloat())
+                                    val v0 = finger - c0
+                                    val a0 = kotlin.math.atan2(v0.y, v0.x); val d0 = v0.getDistance().coerceAtLeast(1f)
+                                    do {
+                                        val ev = awaitPointerEvent()
+                                        val ch = ev.changes.firstOrNull() ?: break
+                                        finger += ch.positionChange()
+                                        ch.consume()
+                                        val v = finger - c0
+                                        val ang = Math.toDegrees((kotlin.math.atan2(v.y, v.x) - a0).toDouble()).toFloat()
+                                        val k = v.getDistance() / d0
+                                        update(sel.id) { it.copy(rot = start.rot + ang, scale = (start.scale * k).coerceIn(0.35f, 2.6f)) }
+                                    } while (ev.changes.any { it.pressed })
+                                }
+                            }
+                    )
+                    val del = with(density) { 34.dp.toPx() }
+                    Box(
+                        Modifier
+                            .offset { IntOffset((cx - del / 2).roundToInt(), (cy - half * 1.25f - del).roundToInt().coerceAtLeast(0)) }
+                            .size(34.dp)
+                            .shadow(4.dp, CircleShape)
+                            .clip(CircleShape)
+                            .background(Color.White)
+                            .clickable {
+                                snapshot()
+                                board = board.copy(stickers = board.stickers.filter { it.id != sel.id }); dirty = true
+                                selected = null
+                                haptic.performHapticFeedback(HapticFeedbackType.Confirm)
+                            },
+                        contentAlignment = Alignment.Center
+                    ) { Icon(Icons.Default.Delete, contentDescription = "删除", tint = MaterialTheme.colorScheme.error, modifier = Modifier.size(18.dp)) }
+                }
+            }
+        }
+        Spacer(Modifier.height(12.dp))
+        val sel = board.stickers.firstOrNull { it.id == selected }
+        AnimatedVisibility(visible = sel != null, enter = fadeIn(tween(150)) + expandVertically(), exit = fadeOut(tween(120)) + shrinkVertically()) {
+            Row(Modifier.fillMaxWidth().padding(bottom = 8.dp).horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                val cur = sel
+                if (cur?.type == "photo") {
+                    BoardButton(if (cur.style == "polaroid") "换成白边贴纸" else "换成拍立得", Icons.Default.Image) {
+                        snapshot(); update(cur.id) { it.copy(style = if (it.style == "polaroid") "cut" else "polaroid") }
+                    }
+                }
+                if (cur?.type == "note") {
+                    BoardButton("改文字", Icons.Default.Edit) { noteEdit = cur }
+                }
+                if (cur != null) {
+                    BoardButton("摆正", Icons.Default.Check) { snapshot(); update(cur.id) { it.copy(rot = 0f) } }
+                }
+            }
+        }
+        Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            BoardButton("照片", Icons.Default.Image) { showPhotos = true }
+            BoardButton("便签", Icons.Default.Edit) { noteEdit = com.swenhao10.localfirst.widget.Sticker(id = 0, type = "note") }
+            BoardButton("换板子·" + com.swenhao10.localfirst.widget.StickerArt.boardLabel(board.board), Icons.Default.Folder) {
+                val all = com.swenhao10.localfirst.widget.StickerArt.BOARDS
+                snapshot(); board = board.copy(board = all[(all.indexOf(board.board) + 1) % all.size]); dirty = true
+            }
+            BoardButton("撤销", Icons.AutoMirrored.Filled.Undo, enabled = history.isNotEmpty()) {
+                if (history.isNotEmpty()) { board = history.removeAt(history.size - 1); dirty = true; selected = null }
+            }
+        }
+    }
+
+    if (showPhotos) {
+        var paths by remember { mutableStateOf<List<String>?>(null) }
+        LaunchedEffect(Unit) {
+            paths = withContext(Dispatchers.IO) {
+                db.records().all().flatMap { it.images() }.filter { !isVideoPath(it) && File(it).exists() }.distinct().take(90)
+            }
+        }
+        ZhAlertDialog(
+            onDismissRequest = { showPhotos = false },
+            title = { Text("从记录里选照片") },
+            dismissButton = null,
+            confirmButton = { TextButton(onClick = { showPhotos = false }) { Text("关闭") } },
+            text = {
+                val list = paths
+                when {
+                    list == null -> Text("正在读取…")
+                    list.isEmpty() -> Text("记录里还没有照片。先去「记录」拍一张或从相册选一张吧。")
+                    else -> FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        list.forEach { p ->
+                            val thumb by produceState<androidx.compose.ui.graphics.ImageBitmap?>(null, p) {
+                                value = withContext(Dispatchers.IO) { com.swenhao10.localfirst.widget.StickerArt.loadPhoto(p, 240)?.asImageBitmap() }
+                            }
+                            val src = remember { MutableInteractionSource() }
+                            Box(
+                                Modifier.size(84.dp).pressScale(src).clip(RoundedCornerShape(14.dp))
+                                    .background(MaterialTheme.colorScheme.onSurface.copy(alpha = .08f))
+                                    .clickable(interactionSource = src, indication = null) {
+                                        showPhotos = false
+                                        add(com.swenhao10.localfirst.widget.Sticker(
+                                            id = System.currentTimeMillis(), type = "photo", path = p,
+                                            x = 0.35f + kotlin.random.Random.nextFloat() * 0.3f, y = 0.35f + kotlin.random.Random.nextFloat() * 0.3f,
+                                            rot = kotlin.random.Random.nextFloat() * 14f - 7f
+                                        ))
+                                    }
+                            ) {
+                                thumb?.let { Image(it, contentDescription = null, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize()) }
+                            }
+                        }
+                    }
+                }
+            }
+        )
+    }
+
+    noteEdit?.let { editing ->
+        var text by remember(editing.id) { mutableStateOf(editing.text) }
+        var color by remember(editing.id) { mutableStateOf(editing.color) }
+        ZhAlertDialog(
+            onDismissRequest = { noteEdit = null },
+            title = { Text(if (editing.id == 0L) "写一张小便签" else "改便签") },
+            dismissButton = { TextButton(onClick = { noteEdit = null }) { Text("取消") } },
+            confirmButton = {
+                Button(enabled = text.isNotBlank(), onClick = {
+                    if (editing.id == 0L) {
+                        add(editing.copy(id = System.currentTimeMillis(), text = text.trim(), color = color,
+                            x = 0.35f + kotlin.random.Random.nextFloat() * 0.3f, y = 0.4f + kotlin.random.Random.nextFloat() * 0.3f,
+                            rot = kotlin.random.Random.nextFloat() * 10f - 5f))
+                    } else {
+                        snapshot(); update(editing.id) { it.copy(text = text.trim(), color = color) }
+                    }
+                    noteEdit = null
+                }) { Text(if (editing.id == 0L) "贴上去" else "改好了") }
+            },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    OutlinedTextField(
+                        value = text, onValueChange = { if (it.length <= 60) text = it },
+                        placeholder = { Text("今天背了 30 个词") },
+                        minLines = 2, maxLines = 4, modifier = Modifier.fillMaxWidth()
+                    )
+                    Text("纸的颜色", style = MaterialTheme.typography.labelLarge)
+                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        com.swenhao10.localfirst.widget.StickerArt.NOTE_COLORS.forEach { c ->
+                            val on = c == color
+                            val ringRaw by animateFloatAsState(if (on) 1f else 0f, spring(dampingRatio = 0.6f, stiffness = 500f), label = "noteRing")
+                            val ring = ringRaw.coerceIn(0f, 1f)
+                            Box(
+                                Modifier.size(38.dp)
+                                    .border((2.5f * ring).dp, MaterialTheme.colorScheme.primary.copy(alpha = ring), CircleShape)
+                                    .padding((4f * ring).dp)
+                                    .clip(CircleShape)
+                                    .background(Color(c))
+                                    .border(1.dp, Color.Black.copy(alpha = .08f), CircleShape)
+                                    .clickable { color = c }
+                            )
+                        }
+                    }
+                }
+            }
+        )
+    }
 }
