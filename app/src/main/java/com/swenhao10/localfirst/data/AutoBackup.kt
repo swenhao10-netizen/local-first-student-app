@@ -22,7 +22,8 @@ import java.util.zip.ZipOutputStream
 /**
  * 自动备份：每次离开知行，数据有变化就打一个 zip（data.json + 照片视频）
  * 存到手机「文档/知行」，只留最新 3 份。卸载知行不会删这个文件夹。
- * 只支持安卓 10 及以上（不用存储权限）；更老的系统跳过。
+ * 安卓 10 及以上走 MediaStore（不用任何存储权限，文件夹第一次写的时候系统自动建）；
+ * 安卓 8/9 静默存到 App 自己的外部目录（Android/data/…/files/Documents/知行），不弹任何选择框。
  */
 object AutoBackup {
     private const val PREFS = "zhixing_backup"
@@ -37,7 +38,66 @@ object AutoBackup {
     fun isEnabled(c: Context) = p(c).getBoolean(KEY_ON, true)
     fun setEnabled(c: Context, on: Boolean) = p(c).edit().putBoolean(KEY_ON, on).apply()
     fun lastAt(c: Context) = p(c).getLong(KEY_AT, 0L)
-    fun supported() = Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q
+    /** 每个系统版本都能备份：10+ 进「文档/知行」，更老的进 App 自己的目录。 */
+    fun supported() = true
+    private fun mediaStore() = Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q
+    /** 给界面显示的存放位置。 */
+    fun locationLabel() = if (mediaStore()) "「文档/知行」" else "App 自己的文件夹"
+
+    /** 安卓 8/9：App 专属外部目录里的 知行 文件夹（不用权限，卸载会一起删）。 */
+    private fun legacyDir(c: Context): File? =
+        c.getExternalFilesDir(Environment.DIRECTORY_DOCUMENTS)?.let { File(it, "知行") }?.apply { mkdirs() }
+
+    /** 找到的一份备份：uri 可以直接交给 DataTransfer.import。 */
+    data class Found(val uri: android.net.Uri, val name: String)
+
+    /**
+     * 找最新的一份备份（只找得到知行自己能读的：安卓 11+ 卸载重装后，旧安装写的文件通常读不到，这时返回 null，界面什么都不弹）。
+     */
+    fun findLatest(c: Context): Found? = runCatching {
+        if (mediaStore()) {
+            val collection = MediaStore.Files.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
+            c.contentResolver.query(
+                collection, arrayOf(MediaStore.MediaColumns._ID, MediaStore.MediaColumns.DISPLAY_NAME),
+                "${MediaStore.MediaColumns.RELATIVE_PATH} LIKE ? AND ${MediaStore.MediaColumns.DISPLAY_NAME} LIKE ?",
+                arrayOf("$FOLDER%", "$PREFIX%"), "${MediaStore.MediaColumns.DISPLAY_NAME} DESC"
+            )?.use { cur ->
+                while (cur.moveToNext()) {
+                    val uri = ContentUris.withAppendedId(collection, cur.getLong(0))
+                    // 列表里有但打不开（别的安装写的）就跳过
+                    val ok = runCatching { c.contentResolver.openInputStream(uri)?.use { it.read() >= 0 } ?: false }.getOrDefault(false)
+                    if (ok) return@runCatching Found(uri, cur.getString(1) ?: "")
+                }
+            }
+            null
+        } else {
+            legacyDir(c)?.listFiles { f -> f.name.startsWith(PREFIX) && f.name.endsWith(".zip") }
+                ?.maxByOrNull { it.name }?.let { Found(android.net.Uri.fromFile(it), it.name) }
+        }
+    }.getOrNull()
+
+    /**
+     * 第一次打开就把「文档/知行」建出来：放一个说明小文件（只写一次）。之后第一次备份也会自动建。
+     */
+    fun ensureFolder(c: Context) {
+        val prefs = p(c)
+        if (prefs.getBoolean("folder_made", false)) return
+        runCatching {
+            if (mediaStore()) {
+                val values = ContentValues().apply {
+                    put(MediaStore.MediaColumns.DISPLAY_NAME, "关于这个文件夹.txt")
+                    put(MediaStore.MediaColumns.MIME_TYPE, "text/plain")
+                    put(MediaStore.MediaColumns.RELATIVE_PATH, FOLDER)
+                }
+                val uri = c.contentResolver.insert(MediaStore.Files.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY), values)
+                    ?: error("insert failed")
+                c.contentResolver.openOutputStream(uri)?.use {
+                    it.write("这是「知行」的自动备份文件夹。每次离开知行，数据有变化就在这里存一份「知行备份-日期.zip」，留最近 3 份。\n卸载知行不会删除这里的文件；重装后可以在「我的 → 从备份恢复」里选它恢复。\n".toByteArray(Charsets.UTF_8))
+                }
+            } else legacyDir(c)
+            prefs.edit().putBoolean("folder_made", true).apply()
+        }
+    }
 
     /** 离开 App 时调用：排一个后台任务，App 被关掉也能跑完。 */
     fun schedule(c: Context) {
@@ -52,7 +112,6 @@ object AutoBackup {
 
     /** 数据没变就不备份；force = 手动「立即备份」。返回是否写了新文件。 */
     suspend fun run(c: Context, force: Boolean): Boolean {
-        if (!supported()) return false
         val db = AppDatabase.get(c)
         val json = DataTransfer.buildJson(db)
         val records = db.records().all()
@@ -62,6 +121,14 @@ object AutoBackup {
         if (records.isEmpty() && db.wordProgress().all().isEmpty() && !force) return false
 
         val name = PREFIX + SimpleDateFormat("yyyyMMdd-HHmmss", Locale.CHINA).format(Date()) + ".zip"
+        if (!mediaStore()) {
+            val dir = legacyDir(c) ?: return false
+            val f = File(dir, name)
+            try { f.outputStream().use { writeZip(it, json.toString(2), media) } } catch (e: Throwable) { f.delete(); throw e }
+            p(c).edit().putString(KEY_SIG, sig).putLong(KEY_AT, System.currentTimeMillis()).apply()
+            dir.listFiles { x -> x.name.startsWith(PREFIX) }?.sortedByDescending { it.name }?.drop(KEEP)?.forEach { it.delete() }
+            return true
+        }
         val resolver = c.contentResolver
         val values = ContentValues().apply {
             put(MediaStore.MediaColumns.DISPLAY_NAME, name)
@@ -100,6 +167,7 @@ object AutoBackup {
 
     /** 只留最新 3 份（只能看到、删掉知行自己写的文件）。 */
     private fun prune(c: Context) {
+        if (!mediaStore()) return
         val collection = MediaStore.Files.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
         val ids = mutableListOf<Long>()
         c.contentResolver.query(

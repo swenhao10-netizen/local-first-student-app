@@ -269,6 +269,7 @@ import com.swenhao10.localfirst.autobook.Payment
 import androidx.lifecycle.compose.LifecycleResumeEffect
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.zIndex
 import androidx.compose.runtime.mutableFloatStateOf
@@ -303,7 +304,8 @@ class MainActivity : ComponentActivity() {
             var showSplash by rememberSaveable { mutableStateOf(state == null) }
             var crashText by remember { mutableStateOf(lastCrash) }
             Box(Modifier.fillMaxSize()) {
-                LocalFirstApp(db)
+                // 启动动画放完之前，别的 Tab 不预先组合，把这段时间全留给启动动画
+                LocalFirstApp(db, launchDone = !showSplash)
                 if (showSplash) LaunchAnimation(onFinished = { showSplash = false })
                 if (!showSplash) RestorePrompt(db)
                 crashText?.let { txt ->
@@ -561,7 +563,7 @@ private fun ZhSheet(
     ) {
         AnimatedVisibility(
             visibleState = visible,
-            enter = if (reduce) fadeIn(tween(Motion.SMALL)) else slideInVertically(spring(dampingRatio = 0.85f, stiffness = 400f, visibilityThreshold = IntOffset.VisibilityThreshold)) { it } + fadeIn(tween(160)),
+            enter = if (reduce) fadeIn(tween(Motion.SMALL)) else slideInVertically(spring(dampingRatio = 1f, stiffness = 500f)) { it } + fadeIn(tween(120)),
             exit = if (reduce) fadeOut(tween(120)) else slideOutVertically(tween(180, easing = Motion.EaseOut)) { it } + fadeOut(tween(120))
         ) {
             val shape = RoundedCornerShape(30.dp)
@@ -809,6 +811,8 @@ private val LocalBackdrop = staticCompositionLocalOf<LayerBackdrop?> { null }
 private val LocalOverlay = staticCompositionLocalOf<androidx.compose.runtime.snapshots.SnapshotStateMap<Any, OverlayEntry>?> { null }
 /** 这个 Tab 是否是当前显示的那个：保活的隐藏 Tab 里的返回键处理要关掉。 */
 private val LocalTabActive = compositionLocalOf { true }
+/** 这个 Tab 第几次变成可见（保活后入场动画靠它重放）。 */
+private val LocalTabEnter = compositionLocalOf { 1 }
 /** 卡片正在被拖动：GlassCard 临时画半透明实底，不做实时模糊/折射（每帧重算模糊会卡）。 */
 private val LocalGlassCheap = compositionLocalOf { false }
 /** 自定义背景图路径；null = 默认渐变。 */
@@ -997,7 +1001,7 @@ private fun warnTone(): Color =
 private fun Color.luminanceApprox(): Float = 0.2126f * red + 0.7152f * green + 0.0722f * blue
 
 /**
- * 会变的数字：只滚动变了的那几位（新数字从下往上进来，320ms），没变的位不动，停住后不再闪。
+ * 会变的数字：只滚动变了的那几位（新数字从下往上进来，200ms），没变的位不动，停住后不再闪。
  * 按“从右数第几位”对齐，个位永远对着个位。减弱动画时只淡入淡出。
  */
 @Composable
@@ -1018,8 +1022,8 @@ private fun RollingText(
                             fadeIn(tween(Motion.SMALL)) togetherWith fadeOut(tween(90)) using SizeTransform(clip = false)
                         } else {
                             val up = targetState > initialState
-                            (slideInVertically(tween(320, easing = Motion.EaseOut)) { if (up) it else -it } + fadeIn(tween(260)))
-                                .togetherWith(slideOutVertically(tween(320, easing = Motion.EaseOut)) { if (up) -it else it } + fadeOut(tween(200)))
+                            (slideInVertically(tween(Motion.STATE, easing = Motion.EaseOut)) { if (up) it else -it } + fadeIn(tween(Motion.STATE)))
+                                .togetherWith(slideOutVertically(tween(Motion.STATE, easing = Motion.EaseOut)) { if (up) -it else it } + fadeOut(tween(Motion.EXIT)))
                                 .using(SizeTransform(clip = false))
                         }
                     },
@@ -1119,7 +1123,7 @@ private val INCOME_CATEGORIES = listOf("生活费", "兼职", "其他")
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun LocalFirstApp(db: AppDatabase) {
+private fun LocalFirstApp(db: AppDatabase, launchDone: Boolean = true) {
     val scope = rememberCoroutineScope()
     var tab by remember { mutableStateOf(Tab.RECORD) }
     var showAddRecord by remember { mutableStateOf(false) }
@@ -1149,6 +1153,13 @@ private fun LocalFirstApp(db: AppDatabase) {
     val unknownDao = remember(db) { db.unknownWords() }
     val cards by cardsDao.observeAll().collectAsState(initial = emptyList())
     val records by recordsDao.observeAll().collectAsState(initial = emptyList())
+    // 第一次有了记录、还从没备份过：马上在后台备份一份，「文档/知行」里立刻就有东西
+    val hasRecords = records.isNotEmpty()
+    LaunchedEffect(hasRecords) {
+        if (hasRecords && com.swenhao10.localfirst.data.AutoBackup.lastAt(context) == 0L) {
+            com.swenhao10.localfirst.data.AutoBackup.schedule(context)
+        }
+    }
     val unknownWords by unknownDao.observeAll().collectAsState(initial = emptyList())
     var packWords by remember { mutableStateOf<List<PackWord>>(emptyList()) }
     var packMeta by remember { mutableStateOf<PackMeta?>(null) }
@@ -1285,19 +1296,31 @@ private fun LocalFirstApp(db: AppDatabase) {
             }
         ) { padding ->
             // Tab 保活：去过的 Tab 一直留在组合里（滚动位置、子页面、图片都不重建），切换只在 graphicsLayer 里做 ≤180ms 的透明度交叉淡化。
-            // 看不见的 Tab 不画（drawWithContent 跳过，玻璃模糊也不算），也不接触摸；启动后空闲时把其余 Tab 预先组合好，第一次切也不卡。
+            // 看不见的 Tab 不画（drawWithContent 跳过，玻璃模糊也不算），也不接触摸。
+            // 预组合其余 Tab：等启动动画完全放完、再空闲一会儿，才一帧一个地组合，不跟启动动画抢主线程。
             val visitedTabs = remember { mutableStateListOf(tab) }
             if (tab !in visitedTabs) visitedTabs.add(tab)
-            LaunchedEffect(Unit) {
-                delay(900)
+            LaunchedEffect(launchDone) {
+                if (!launchDone) return@LaunchedEffect
+                delay(700)
                 Tab.values().forEach { t ->
-                    if (t !in visitedTabs) { visitedTabs.add(t); delay(120) }
+                    if (t !in visitedTabs) {
+                        withFrameNanos { }
+                        visitedTabs.add(t)
+                        delay(250)
+                    }
                 }
             }
             Box(Modifier.fillMaxSize()) {
             Tab.values().forEach { selected ->
                 if (selected in visitedTabs) key(selected) {
                 val active = selected == tab
+                // 每次这个 Tab 变成可见就 +1：页面里的入场动画（收支条、分类条生长等）按它重新放一遍，
+                // 跟 0.9.0 每次切进来都重放一样；在后台预组合时是 0，不会提前把动画放掉。
+                val entry = remember { intArrayOf(0, 0) }   // [第几次进入, 上一帧是否可见]
+                if (active && entry[1] == 0) entry[0]++
+                entry[1] = if (active) 1 else 0
+                val enterCount = entry[0]
                 val tabAlpha = remember { Animatable(if (active) 1f else 0f) }
                 LaunchedEffect(active) {
                     val target = if (active) 1f else 0f
@@ -1313,7 +1336,7 @@ private fun LocalFirstApp(db: AppDatabase) {
                         // 当前 Tab 整块都算命中，触摸不会漏到下面看不见的 Tab
                         .then(if (active) Modifier.pointerInput(Unit) { awaitPointerEventScope { while (true) awaitPointerEvent() } } else Modifier)
                 ) {
-                CompositionLocalProvider(LocalTabActive provides active) {
+                CompositionLocalProvider(LocalTabActive provides active, LocalTabEnter provides enterCount) {
                 when (selected) {
                     Tab.RECORD -> RecordScreen(
                         records = records,
@@ -3027,14 +3050,14 @@ private fun WordsScreen(
                     horizontalAlignment = Alignment.CenterHorizontally
                 ) {
                     Spacer(Modifier.height(36.dp))
-                    // 换词：卡片不动，只换里面的词，新词从右边 40% 处滑进来、旧词往左滑出，配合淡入淡出
+                    // 换词：卡片不动，只换里面的词，新词从右边 1/6 处进来
                     AnimatedContent(
                         targetState = lite,
                         contentKey = { it.headword },
                         transitionSpec = {
                             if (reduceMotion) fadeIn(tween(Motion.SMALL)) togetherWith fadeOut(tween(100))
-                            else (slideInHorizontally(spring(dampingRatio = 0.9f, stiffness = 420f, visibilityThreshold = IntOffset.VisibilityThreshold)) { it * 2 / 5 } + fadeIn(tween(240, easing = Motion.EaseOut)))
-                                .togetherWith(slideOutHorizontally(tween(220, easing = Motion.EaseOut)) { -it * 2 / 5 } + fadeOut(tween(180)))
+                            else (slideInHorizontally(tween(Motion.STATE, easing = Motion.EaseOut)) { it / 6 } + fadeIn(tween(Motion.STATE)))
+                                .togetherWith(slideOutHorizontally(tween(Motion.EXIT, easing = Motion.EaseOut)) { -it / 6 } + fadeOut(tween(Motion.EXIT)))
                                 .using(SizeTransform(clip = false))
                         },
                         label = "word"
@@ -3583,9 +3606,10 @@ private fun OverviewScreen(records: List<RecordEntry>, wordCount: Int, modifier:
                     val total = (income + expense).takeIf { it > 0 } ?: 1L
                     // 收入占比条：在 drawBehind 里按动画后的比例画，不触发重新布局
                     val incomeTarget = income.toFloat() / total
-                    val incomeAnim = remember { Animatable(0f) }
+                    val tabEnter = LocalTabEnter.current
+                    val incomeAnim = remember(tabEnter) { Animatable(0f) }
                     val incomeSpec = motion(tween<Float>(500, easing = Motion.EaseEnter))
-                    LaunchedEffect(incomeTarget) { incomeAnim.animateTo(incomeTarget, incomeSpec) }
+                    LaunchedEffect(incomeTarget, tabEnter) { if (tabEnter > 0) incomeAnim.animateTo(incomeTarget, incomeSpec) }
                     val barColor = if (glass) primary else onP.copy(alpha = .7f)
                     Box(
                         Modifier.fillMaxWidth().height(6.dp).clip(RoundedCornerShape(50)).background(fg.copy(alpha = .12f))
@@ -3626,9 +3650,10 @@ private fun OverviewScreen(records: List<RecordEntry>, wordCount: Int, modifier:
                                 Text(cat, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold, modifier = Modifier.width(44.dp))
                                 // 分类条从左长出来，条与条错开 60ms
                                 val target = (cents.toFloat() / maxValue).coerceIn(0.04f, 1f)
-                                val grow = remember(cat) { Animatable(0f) }
+                                val tabEnter = LocalTabEnter.current
+                                val grow = remember(cat, tabEnter) { Animatable(0f) }
                                 val growSpec = motion(tween<Float>(500, delayMillis = i * 60, easing = Motion.EaseEnter))
-                                LaunchedEffect(target) { grow.animateTo(target, growSpec) }
+                                LaunchedEffect(target, tabEnter) { if (tabEnter > 0) grow.animateTo(target, growSpec) }
                                 val catColor = categoryColor(cat, primary)
                                 Box(
                                     Modifier.weight(1f).height(10.dp).clip(RoundedCornerShape(50)).background(MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f))
@@ -3962,7 +3987,8 @@ private fun DataScreen(
             onMessage(result.fold({ "备份已导出" }, { "导出失败：${it.message ?: "未知错误"}" }))
         }
     }
-    val import = androidx.activity.compose.rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+    // 手动恢复：用户自己点的，可以开系统文件选择器，并尽量直接停在「文档/知行」
+    val import = androidx.activity.compose.rememberLauncherForActivityResult(OpenBackupDocument()) { uri ->
         if (uri != null) scope.launch {
             val result = runCatching { withContext(Dispatchers.IO) { DataTransfer.import(context, uri, db) } }
             onMessage(result.fold({ "数据已导入" }, { "导入失败：${it.message ?: "未知错误"}" }))
@@ -4237,7 +4263,7 @@ private fun DataScreen(
                     Column(Modifier.weight(1f)) {
                         Text("自动备份", fontWeight = FontWeight.SemiBold)
                         Text(
-                            if (lastBackup > 0) "上次 ${SimpleDateFormat("M月d日 HH:mm", Locale.CHINA).format(Date(lastBackup))} · 存在「文档/知行」，留最近 3 份" else "离开知行时备份到「文档/知行」，留最近 3 份",
+                            if (lastBackup > 0) "上次 ${SimpleDateFormat("M月d日 HH:mm", Locale.CHINA).format(Date(lastBackup))} · 存在${com.swenhao10.localfirst.data.AutoBackup.locationLabel()}，留最近 3 份" else "离开知行时自动备份到${com.swenhao10.localfirst.data.AutoBackup.locationLabel()}，留最近 3 份",
                             style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
@@ -4245,7 +4271,7 @@ private fun DataScreen(
                         scope.launch {
                             val r = runCatching { withContext(Dispatchers.IO) { com.swenhao10.localfirst.data.AutoBackup.run(context, force = true) } }
                             lastBackup = com.swenhao10.localfirst.data.AutoBackup.lastAt(context)
-                            onMessage(r.fold({ "已备份到「文档/知行」" }, { "备份失败：${it.message ?: "未知错误"}" }))
+                            onMessage(r.fold({ "已备份到${com.swenhao10.localfirst.data.AutoBackup.locationLabel()}" }, { "备份失败：${it.message ?: "未知错误"}" }))
                         }
                     }) { Text("立即备份") }
                     Switch(checked = autoBackupOn, onCheckedChange = { autoBackupOn = it; com.swenhao10.localfirst.data.AutoBackup.setEnabled(context, it) })
@@ -4467,7 +4493,7 @@ private fun MineRow(icon: ImageVector, title: String, sub: String, onClick: () -
     // 整行只缩到 0.985，避免整行抖动
     val src = remember { MutableInteractionSource() }
     Row(
-        Modifier.fillMaxWidth().pressScale(src, pressed = 0.97f)
+        Modifier.fillMaxWidth().pressScale(src, pressed = 0.985f)
             .clickable(interactionSource = src, indication = androidx.compose.foundation.LocalIndication.current, onClick = onClick)
             .padding(horizontal = 18.dp, vertical = 14.dp),
         verticalAlignment = Alignment.CenterVertically
@@ -4686,38 +4712,65 @@ private fun <T> useMemoized(vararg keys: Any?, calculate: () -> T): T {
 }
 
 
-/** 第一次打开（没有任何记录）时问一下要不要从备份恢复。重装后 App 读不到旧文件，只能让用户自己选。 */
+/** 「从备份恢复」用的系统文件选择器：尽量一打开就停在「文档/知行」（系统不认就从默认位置开始）。 */
+private class OpenBackupDocument : ActivityResultContracts.OpenDocument() {
+    override fun createIntent(context: android.content.Context, input: Array<String>): android.content.Intent {
+        val intent = super.createIntent(context, arrayOf("application/zip", "application/json", "text/plain", "application/octet-stream"))
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) runCatching {
+            val initial = android.provider.DocumentsContract.buildDocumentUri(
+                "com.android.externalstorage.documents", "primary:" + com.swenhao10.localfirst.data.AutoBackup.FOLDER
+            )
+            intent.putExtra(android.provider.DocumentsContract.EXTRA_INITIAL_URI, initial)
+        }
+        return intent
+    }
+}
+
+/**
+ * 第一次打开（没有任何记录）：自动去「文档/知行」找知行能读到的最新备份。
+ * 找到了才问一句「之前用过知行？」，点一下就恢复；找不到 / 读不到就什么都不弹（绝不弹文件选择器）。
+ * 同时把「文档/知行」文件夹建好，之后的自动备份都放这里。
+ */
 @Composable
 private fun RestorePrompt(db: AppDatabase) {
     val context = LocalContext.current
     val prefs = remember { context.getSharedPreferences("zhixing_backup", android.content.Context.MODE_PRIVATE) }
-    var show by remember { mutableStateOf(false) }
+    var found by remember { mutableStateOf<com.swenhao10.localfirst.data.AutoBackup.Found?>(null) }
+    var restoring by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
+    val AB = com.swenhao10.localfirst.data.AutoBackup
     LaunchedEffect(Unit) {
-        if (prefs.getBoolean("restore_asked", false)) return@LaunchedEffect
-        val empty = withContext(Dispatchers.IO) { db.records().all().isEmpty() && db.wordProgress().all().isEmpty() }
-        if (empty) show = true else prefs.edit().putBoolean("restore_asked", true).apply()
-    }
-    val picker = androidx.activity.compose.rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
-        if (uri != null) scope.launch {
-            val r = runCatching { withContext(Dispatchers.IO) { com.swenhao10.localfirst.data.DataTransfer.import(context, uri, db) } }
-            android.widget.Toast.makeText(context, r.fold({ "已恢复" }, { "恢复失败：${it.message ?: "未知错误"}" }), android.widget.Toast.LENGTH_LONG).show()
+        val latest = withContext(Dispatchers.IO) {
+            val empty = db.records().all().isEmpty() && db.wordProgress().all().isEmpty()
+            val hit = if (empty && !prefs.getBoolean("restore_asked", false)) AB.findLatest(context) else null
+            if (!empty) prefs.edit().putBoolean("restore_asked", true).apply()
+            // 找完再建文件夹（放一个说明小文件），这样不会把说明文件当备份
+            AB.ensureFolder(context)
+            hit
         }
+        found = latest
     }
-    if (show) {
-        ZhAlertDialog(
-            onDismissRequest = { show = false; prefs.edit().putBoolean("restore_asked", true).apply() },
-            title = { Text("之前用过知行？") },
-            text = { Text("可以从手机「文档/知行」里的备份恢复，选最新的那个「知行备份-…zip」。以后也能在「我的 → 从备份恢复」里做。") },
-            confirmButton = {
-                TextButton(onClick = {
-                    show = false; prefs.edit().putBoolean("restore_asked", true).apply()
-                    picker.launch(arrayOf("application/zip", "application/json", "application/octet-stream"))
-                }) { Text("选择备份") }
-            },
-            dismissButton = { TextButton(onClick = { show = false; prefs.edit().putBoolean("restore_asked", true).apply() }) { Text("不用了") } }
-        )
-    }
+    val f = found ?: return
+    fun close() { found = null; prefs.edit().putBoolean("restore_asked", true).apply() }
+    val label = Regex("""(\d{4})(\d{2})(\d{2})-(\d{2})(\d{2})""").find(f.name)?.destructured
+        ?.let { (_, m, d, h, mi) -> "${m.toInt()}月${d.toInt()}日 $h:$mi" }
+    ZhAlertDialog(
+        onDismissRequest = { if (!restoring) close() },
+        title = { Text("之前用过知行？") },
+        text = { Text("在手机「文档/知行」里找到一份备份" + (label?.let { "（$it）" } ?: "") + "，点「恢复」就能把记录、单词和照片找回来。") },
+        confirmButton = {
+            TextButton(enabled = !restoring, onClick = {
+                restoring = true
+                scope.launch {
+                    val r = runCatching { withContext(Dispatchers.IO) { com.swenhao10.localfirst.data.DataTransfer.import(context, f.uri, db) } }
+                    restoring = false
+                    close()
+                    android.widget.Toast.makeText(context, r.fold({ "已恢复" }, { "恢复失败：${it.message ?: "未知错误"}" }), android.widget.Toast.LENGTH_LONG).show()
+                }
+            }) { Text(if (restoring) "正在恢复…" else "恢复") }
+        },
+        dismissButton = { TextButton(enabled = !restoring, onClick = { close() }) { Text("不用了") } }
+    )
 }
 
 /** 检查更新：只有点了才联网。 */
