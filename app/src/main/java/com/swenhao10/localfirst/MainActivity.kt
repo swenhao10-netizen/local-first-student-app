@@ -302,6 +302,9 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(state: Bundle?) {
         installCrashLog()
         super.onCreate(state)
+        // 自动记账：打开 App 时把付款通知监听重新绑上，并排好 15 分钟一次的保活
+        AutoBook.ensureBound(this)
+        AutoBook.scheduleKeepAlive(this)
         val db = AppDatabase.get(this)
         val crashFile = java.io.File(filesDir, "last_crash.txt")
         val lastCrash = runCatching { if (crashFile.exists()) crashFile.readText() else null }.getOrNull()
@@ -4289,8 +4292,10 @@ private fun DataScreen(
             var hasAccess by remember { mutableStateOf(AutoBook.hasAccess(ctx)) }
             var autoOn by remember { mutableStateOf(AutoBook.isEnabled(ctx)) }
             var askFirst by remember { mutableStateOf(AutoBook.askFirst(ctx)) }
+            var bgOk by remember { mutableStateOf(AutoBook.ignoresBatteryOpt(ctx)) }
             LifecycleResumeEffect(Unit) {
                 hasAccess = AutoBook.hasAccess(ctx)
+                bgOk = AutoBook.ignoresBatteryOpt(ctx)
                 onPauseOrDispose { }
             }
             Text("自动记账", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
@@ -4323,13 +4328,29 @@ private fun DataScreen(
                         HorizontalDivider()
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Column(Modifier.weight(1f)) {
+                                Text("允许后台运行", fontWeight = FontWeight.SemiBold)
+                                Text(if (bgOk) "已允许：关掉知行也能记" else "没允许的话，关掉知行后系统会停掉记账", style = MaterialTheme.typography.labelMedium, color = if (bgOk) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.error)
+                            }
+                            if (!bgOk) TextButton(onClick = { runCatching { ctx.startActivity(AutoBook.batteryOptIntent(ctx)) }.onFailure { runCatching { ctx.startActivity(AutoBook.appDetailsIntent(ctx)) } } }) { Text("去允许") }
+                        }
+                        HorizontalDivider()
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Column(Modifier.weight(1f)) {
+                                Text("自启动和后台耗电", fontWeight = FontWeight.SemiBold)
+                                Text("OPPO：应用详情 → 耗电管理，打开「允许自启动」和「允许后台行为」", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
+                            TextButton(onClick = { runCatching { ctx.startActivity(AutoBook.appDetailsIntent(ctx)) } }) { Text("去设置") }
+                        }
+                        HorizontalDivider()
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Column(Modifier.weight(1f)) {
                                 Text("试一下", fontWeight = FontWeight.SemiBold)
                                 Text("发一条示例通知，不会真的记账", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                             }
                             TextButton(onClick = { AutoBook.prompt(ctx, Payment(3650, "示例商家", "微信支付", "餐饮"), demo = true) }) { Text("试一下") }
                         }
                     }
-                    Text("只在本机识别，不联网；退款、收款、红包、转账不记。OPPO 记得给知行开「自启动」，不然后台会被关。", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text("只在本机识别，不联网；退款、收款、红包、转账不记。被系统停掉过的话，下次连上时会补记通知栏里 30 分钟内的付款。", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             }
         }
