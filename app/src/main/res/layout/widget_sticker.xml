@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/sticker_root"
+    android:layout_width="match_parent" android:layout_height="match_parent">
+    <ImageView android:id="@+id/sticker_board" android:layout_width="match_parent" android:layout_height="match_parent"
+        android:scaleType="fitCenter" android:contentDescription="知行贴纸板" />
+</FrameLayout>

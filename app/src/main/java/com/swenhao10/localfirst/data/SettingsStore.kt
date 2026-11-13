@@ -83,6 +83,14 @@ object SettingsStore {
         prefs(context).edit().putString(KEY_PALETTE, id).apply()
     }
 
+    /** 自定义主题色（ARGB），选「自定义」时用；默认一个蓝色。 */
+    fun getCustomColor(context: Context): Int =
+        prefs(context).getInt("theme_custom_color", 0xFF3A7BD5.toInt())
+
+    fun setCustomColor(context: Context, argb: Int) {
+        prefs(context).edit().putInt("theme_custom_color", argb).apply()
+    }
+
     /** 自定义背景图（本机文件路径），空 = 默认渐变。 */
     fun getBackground(context: Context): String? =
         prefs(context).getString("bg_image", null)?.takeIf { it.isNotBlank() }
@@ -172,6 +180,7 @@ object PaletteId {
     const val PURPLE = "purple"
     const val ORANGE = "orange"
     const val PINK = "pink"
+    const val CUSTOM = "custom"
 
     val ALL = listOf(GREEN, BLUE, PURPLE, ORANGE, PINK)
 
@@ -180,6 +189,7 @@ object PaletteId {
         PURPLE -> "紫罗兰"
         ORANGE -> "暖橙"
         PINK -> "樱粉"
+        CUSTOM -> "自定义"
         else -> "青绿"
     }
 }

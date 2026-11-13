@@ -46,6 +46,49 @@ object AutoBook {
     fun setAskFirst(c: Context, on: Boolean) = p(c).edit().putBoolean(KEY_ASK, on).apply()
 
     /** 系统设置里是否已给知行「通知使用权」。 */
+    fun markConnected(c: Context) = p(c).edit().putLong("connected_at", System.currentTimeMillis()).apply()
+
+    /**
+     * 让系统把监听服务重新绑上。打开 App 时和每 15 分钟的保活任务里调用。
+     * forceToggle：先禁用再启用组件，系统一定会重新绑定（用于很久没连上的情况）。
+     */
+    fun ensureBound(c: Context, forceToggle: Boolean = false) {
+        if (!hasAccess(c)) return
+        val cn = ComponentName(c, PayListener::class.java)
+        runCatching {
+            if (forceToggle) {
+                val pm = c.packageManager
+                pm.setComponentEnabledSetting(cn, PackageManager.COMPONENT_ENABLED_STATE_DISABLED, PackageManager.DONT_KILL_APP)
+                pm.setComponentEnabledSetting(cn, PackageManager.COMPONENT_ENABLED_STATE_ENABLED, PackageManager.DONT_KILL_APP)
+            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) android.service.notification.NotificationListenerService.requestRebind(cn)
+        }
+    }
+
+    /** 是否已允许后台运行（不受电池优化限制）。 */
+    fun ignoresBatteryOpt(c: Context): Boolean =
+        (c.getSystemService(Context.POWER_SERVICE) as android.os.PowerManager).isIgnoringBatteryOptimizations(c.packageName)
+
+    fun batteryOptIntent(c: Context): Intent =
+        Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, android.net.Uri.parse("package:" + c.packageName))
+
+    /** 应用详情页：ColorOS 的「自启动」「后台耗电」都在这里进去。 */
+    fun appDetailsIntent(c: Context): Intent =
+        Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, android.net.Uri.parse("package:" + c.packageName))
+
+    /** 每 15 分钟检查一次监听服务，断了就重新绑。 */
+    fun scheduleKeepAlive(c: Context) {
+        val req = androidx.work.PeriodicWorkRequestBuilder<KeepAliveWorker>(15, java.util.concurrent.TimeUnit.MINUTES).build()
+        androidx.work.WorkManager.getInstance(c).enqueueUniquePeriodicWork("zhixing-autobook-keepalive", androidx.work.ExistingPeriodicWorkPolicy.KEEP, req)
+    }
+
+    class KeepAliveWorker(ctx: Context, params: androidx.work.WorkerParameters) : androidx.work.Worker(ctx, params) {
+        override fun doWork(): Result {
+            if (isEnabled(applicationContext)) ensureBound(applicationContext)
+            return Result.success()
+        }
+    }
+
     fun hasAccess(c: Context) = NotificationManagerCompat.getEnabledListenerPackages(c).contains(c.packageName)
 
     fun accessSettingsIntent(c: Context): Intent =

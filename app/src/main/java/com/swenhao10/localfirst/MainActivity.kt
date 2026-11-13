@@ -34,6 +34,7 @@ import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.calculatePan
 import androidx.compose.foundation.gestures.calculateZoom
+import androidx.compose.foundation.gestures.calculateRotation
 import androidx.compose.ui.input.pointer.positionChanged
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
@@ -192,6 +193,11 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.shadow
+import androidx.compose.runtime.produceState
+import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.automirrored.filled.Undo
+import androidx.compose.ui.input.pointer.positionChange
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.CornerRadius
@@ -286,16 +292,19 @@ import java.util.Calendar
 import java.util.Locale
 
 class MainActivity : ComponentActivity() {
-    // 离开 App 时把桌面毛毡板刷新一下（新记录、刚背的词、待复习数）
+    // 离开 App 时把桌面贴纸板刷新一下
     override fun onStop() {
         super.onStop()
-        com.swenhao10.localfirst.widget.FeltWidgetBase.refreshAll(this)
+        com.swenhao10.localfirst.widget.StickerWidgetBase.refreshAll(this)
         // 离开知行就自动备份一份到「文档/知行」（数据没变就跳过）
         com.swenhao10.localfirst.data.AutoBackup.schedule(this)
     }
     override fun onCreate(state: Bundle?) {
         installCrashLog()
         super.onCreate(state)
+        // 自动记账：打开 App 时把付款通知监听重新绑上，并排好 15 分钟一次的保活
+        AutoBook.ensureBound(this)
+        AutoBook.scheduleKeepAlive(this)
         val db = AppDatabase.get(this)
         val crashFile = java.io.File(filesDir, "last_crash.txt")
         val lastCrash = runCatching { if (crashFile.exists()) crashFile.readText() else null }.getOrNull()
@@ -798,9 +807,184 @@ private val APP_PALETTES = listOf(
     AppPalette(PaletteId.PINK, "樱粉", RoseColors, RoseDarkColors)
 )
 
-private fun paletteFor(id: String, dark: Boolean): androidx.compose.material3.ColorScheme {
+private fun paletteFor(id: String, dark: Boolean, customArgb: Int = 0xFF3A7BD5.toInt()): androidx.compose.material3.ColorScheme {
+    if (id == PaletteId.CUSTOM) return customScheme(customArgb, dark)
     val set = APP_PALETTES.firstOrNull { it.id == id } ?: APP_PALETTES.first()
     return if (dark) set.dark else set.light
+}
+
+/** HSL 取色：h 0..360，s/l 0..1。 */
+private fun hsl(h: Float, s: Float, l: Float): Color {
+    val out = FloatArray(3)
+    out[0] = ((h % 360f) + 360f) % 360f; out[1] = s.coerceIn(0f, 1f); out[2] = l.coerceIn(0f, 1f)
+    return Color(androidx.core.graphics.ColorUtils.HSLToColor(out))
+}
+
+/** 用一个种子色生成整套浅色 / 深色 ColorScheme：主色保证对比度，背景和卡片带一点同色调。 */
+private fun customScheme(argb: Int, dark: Boolean): androidx.compose.material3.ColorScheme {
+    val f = FloatArray(3)
+    androidx.core.graphics.ColorUtils.colorToHSL(argb, f)
+    val h = f[0]; val s = f[1]
+    val sat = if (s < 0.06f) s else s.coerceIn(0.35f, 0.85f)
+    val tint = (sat * 0.35f).coerceAtMost(0.25f)
+    val sh = h + 150f
+    return if (!dark) lightColorScheme(
+        primary = hsl(h, sat, f[2].coerceIn(0.30f, 0.45f)),
+        onPrimary = Color.White,
+        primaryContainer = hsl(h, sat * 0.7f, 0.90f),
+        onPrimaryContainer = hsl(h, sat, 0.15f),
+        secondary = hsl(sh, 0.45f, 0.45f),
+        secondaryContainer = hsl(sh, 0.5f, 0.88f),
+        onSecondaryContainer = hsl(sh, 0.5f, 0.15f),
+        tertiary = hsl(h + 60f, 0.4f, 0.42f),
+        tertiaryContainer = hsl(h + 60f, 0.45f, 0.88f),
+        onTertiaryContainer = hsl(h + 60f, 0.45f, 0.15f),
+        background = hsl(h, tint, 0.97f),
+        onBackground = hsl(h, tint, 0.12f),
+        surface = hsl(h, tint, 0.99f),
+        surfaceVariant = hsl(h, tint, 0.92f),
+        onSurface = hsl(h, tint, 0.12f),
+        onSurfaceVariant = hsl(h, tint * 0.8f, 0.38f)
+    ) else darkColorScheme(
+        primary = hsl(h, sat, 0.70f),
+        onPrimary = hsl(h, sat, 0.15f),
+        primaryContainer = hsl(h, sat * 0.7f, 0.22f),
+        onPrimaryContainer = hsl(h, sat * 0.7f, 0.90f),
+        secondary = hsl(sh, 0.45f, 0.68f),
+        secondaryContainer = hsl(sh, 0.4f, 0.20f),
+        onSecondaryContainer = hsl(sh, 0.4f, 0.88f),
+        tertiary = hsl(h + 60f, 0.4f, 0.70f),
+        tertiaryContainer = hsl(h + 60f, 0.35f, 0.22f),
+        onTertiaryContainer = hsl(h + 60f, 0.35f, 0.88f),
+        background = hsl(h, tint, 0.08f),
+        onBackground = hsl(h, tint, 0.92f),
+        surface = hsl(h, tint, 0.11f),
+        surfaceVariant = hsl(h, tint, 0.17f),
+        onSurface = hsl(h, tint, 0.92f),
+        onSurfaceVariant = hsl(h, tint * 0.8f, 0.70f)
+    )
+}
+
+private val CUSTOM_PRESETS = listOf(
+    0xFF3A7BD5, 0xFF0B6B68, 0xFF2E9D5B, 0xFF8BAA2E, 0xFFE0A000, 0xFFE0662D,
+    0xFFD43C3C, 0xFFD6457A, 0xFFA34FC4, 0xFF5B5BD6, 0xFF2AA7C9, 0xFF5E6B73
+).map { it.toInt() }
+
+/** 渐变滑条：轨道是一条渐变，圆形拇指可拖可点，按下时放大。 */
+@Composable
+private fun GradientSlider(value: Float, brush: Brush, thumbColor: Color, onChange: (Float) -> Unit) {
+    var widthPx by remember { mutableStateOf(1f) }
+    var pressed by remember { mutableStateOf(false) }
+    val scale by animateFloatAsState(if (pressed) 1.25f else 1f, spring(dampingRatio = 0.6f, stiffness = 500f), label = "thumb")
+    val haptic = LocalHapticFeedback.current
+    val density = LocalDensity.current
+    Box(
+        Modifier.fillMaxWidth().height(36.dp)
+            .onSizeChanged { widthPx = it.width.toFloat().coerceAtLeast(1f) }
+            .pointerInput(Unit) {
+                awaitEachGesture {
+                    val down = awaitFirstDown()
+                    pressed = true
+                    haptic.performHapticFeedback(HapticFeedbackType.SegmentTick)
+                    onChange((down.position.x / widthPx).coerceIn(0f, 1f))
+                    do {
+                        val ev = awaitPointerEvent()
+                        val c = ev.changes.firstOrNull() ?: break
+                        if (c.pressed) { onChange((c.position.x / widthPx).coerceIn(0f, 1f)); c.consume() }
+                    } while (ev.changes.any { it.pressed })
+                    pressed = false
+                }
+            },
+        contentAlignment = Alignment.CenterStart
+    ) {
+        Box(Modifier.fillMaxWidth().height(14.dp).clip(RoundedCornerShape(50)).background(brush).border(1.dp, Color.White.copy(alpha = .35f), RoundedCornerShape(50)))
+        val thumb = 26.dp
+        val x = with(density) { (value * (widthPx - thumb.toPx()).coerceAtLeast(0f)).toDp() }
+        Box(
+            Modifier.offset(x = x)
+                .size(thumb)
+                .graphicsLayer { scaleX = scale; scaleY = scale }
+                .shadow(4.dp, CircleShape)
+                .clip(CircleShape)
+                .background(Color.White)
+                .padding(4.dp)
+                .clip(CircleShape)
+                .background(thumbColor)
+        )
+    }
+}
+
+/** 自定义主题色面板：磨砂玻璃底部面板里，上面实时预览，中间色相/饱和/亮度三条滑条，下面常用色。 */
+@Composable
+private fun CustomColorSheet(initial: Int, dark: Boolean, onDismiss: () -> Unit, onApply: (Int) -> Unit) {
+    val hsv = remember { FloatArray(3).also { android.graphics.Color.colorToHSV(initial, it) } }
+    var hue by remember { mutableStateOf(hsv[0]) }
+    var sat by remember { mutableStateOf(hsv[1]) }
+    var value by remember { mutableStateOf(hsv[2]) }
+    val argb = android.graphics.Color.HSVToColor(floatArrayOf(hue, sat, value))
+    val scheme = remember(argb, dark) { customScheme(argb, dark) }
+    val p by animateColorAsState(scheme.primary, tween(120), label = "pv")
+    val pc by animateColorAsState(scheme.primaryContainer, tween(120), label = "pcv")
+    val onPc by animateColorAsState(scheme.onPrimaryContainer, tween(120), label = "opcv")
+    ZhAlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("自定义主题色") },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } },
+        confirmButton = { Button(onClick = { onApply(argb) }, colors = ButtonDefaults.buttonColors(containerColor = p, contentColor = scheme.onPrimary)) { Text("用这个颜色") } },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
+                // 预览：模拟一张卡片 + 主按钮 + 标签
+                Column(
+                    Modifier.fillMaxWidth().clip(RoundedCornerShape(22.dp))
+                        .background(Brush.linearGradient(listOf(pc.copy(alpha = .85f), p.copy(alpha = .35f))))
+                        .border(1.dp, Color.White.copy(alpha = .4f), RoundedCornerShape(22.dp))
+                        .padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Box(Modifier.size(34.dp).clip(CircleShape).background(p))
+                        Spacer(Modifier.width(10.dp))
+                        Column(Modifier.weight(1f)) {
+                            Text("今天", fontWeight = FontWeight.Bold, color = onPc)
+                            Text("背了 30 个词 · 记了 3 笔", style = MaterialTheme.typography.labelMedium, color = onPc.copy(alpha = .75f))
+                        }
+                        Text(String.format("#%06X", argb and 0xFFFFFF), style = MaterialTheme.typography.labelLarge, color = onPc)
+                    }
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Box(Modifier.clip(RoundedCornerShape(50)).background(p).padding(horizontal = 16.dp, vertical = 8.dp)) { Text("记一笔", color = scheme.onPrimary, style = MaterialTheme.typography.labelLarge) }
+                        Box(Modifier.clip(RoundedCornerShape(50)).border(1.dp, p, RoundedCornerShape(50)).padding(horizontal = 16.dp, vertical = 8.dp)) { Text("背单词", color = onPc, style = MaterialTheme.typography.labelLarge) }
+                    }
+                }
+                Text("色相", style = MaterialTheme.typography.labelLarge)
+                GradientSlider(hue / 360f, Brush.horizontalGradient((0..6).map { hsl(it * 60f, 1f, 0.5f) }), Color(android.graphics.Color.HSVToColor(floatArrayOf(hue, 1f, 1f)))) { hue = it * 360f }
+                Text("鲜艳度", style = MaterialTheme.typography.labelLarge)
+                GradientSlider(sat, Brush.horizontalGradient(listOf(Color(android.graphics.Color.HSVToColor(floatArrayOf(hue, 0f, value))), Color(android.graphics.Color.HSVToColor(floatArrayOf(hue, 1f, value))))), Color(argb)) { sat = it }
+                Text("明暗", style = MaterialTheme.typography.labelLarge)
+                GradientSlider(value, Brush.horizontalGradient(listOf(Color.Black, Color(android.graphics.Color.HSVToColor(floatArrayOf(hue, sat, 1f))))), Color(argb)) { value = it.coerceAtLeast(0.05f) }
+                Text("常用色", style = MaterialTheme.typography.labelLarge)
+                Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    CUSTOM_PRESETS.forEach { c ->
+                        val selected = (c and 0xFFFFFF) == (argb and 0xFFFFFF)
+                        // 弹簧会过冲到 0 以下 / 1 以上，padding 和描边不能是负数，夹一下
+                        val ringRaw by animateFloatAsState(if (selected) 1f else 0f, spring(dampingRatio = 0.6f, stiffness = 500f), label = "ring")
+                        val ring = ringRaw.coerceIn(0f, 1f)
+                        val src = remember { MutableInteractionSource() }
+                        Box(
+                            Modifier.size(38.dp).pressScale(src)
+                                .border((2.5f * ring).dp, Color.White.copy(alpha = ring), CircleShape)
+                                .padding((4f * ring).dp)
+                                .clip(CircleShape)
+                                .background(Color(c))
+                                .clickable(interactionSource = src, indication = null) {
+                                    val t = FloatArray(3); android.graphics.Color.colorToHSV(c, t)
+                                    hue = t[0]; sat = t[1]; value = t[2]
+                                }
+                        )
+                    }
+                }
+            }
+        }
+    )
 }
 
 /** 磨砂玻璃主题开关：开着时背景是柔和渐变，卡片、底栏都是半透明的“玻璃”。 */
@@ -1168,6 +1352,7 @@ private fun LocalFirstApp(db: AppDatabase, launchDone: Boolean = true) {
     var themeMode by remember { mutableStateOf(SettingsStore.getThemeMode(context)) }
     // 主题颜色：默认青绿（原来的主色），可换海蓝/紫罗兰/暖橙/樱粉
     var paletteId by remember { mutableStateOf(SettingsStore.getPalette(context)) }
+    var customColor by remember { mutableStateOf(SettingsStore.getCustomColor(context)) }
     // 磨砂玻璃主题：默认开，可在「我的 - 外观」里关
     var glassOn by remember { mutableStateOf(SettingsStore.isGlassEnabled(context)) }
     // 自定义背景图：玻璃模式下铺在最底层
@@ -1255,7 +1440,7 @@ private fun LocalFirstApp(db: AppDatabase, launchDone: Boolean = true) {
         packReady = true
     }
 
-    val baseScheme = paletteFor(paletteId, useDarkTheme)
+    val baseScheme = paletteFor(paletteId, useDarkTheme, customColor)
     MaterialTheme(colorScheme = animateColorScheme(if (glassOn) glassScheme(baseScheme, useDarkTheme) else baseScheme)) {
         val layerBackdrop = rememberLayerBackdrop()
         val overlays = remember { mutableStateMapOf<Any, OverlayEntry>() }
@@ -1387,6 +1572,14 @@ private fun LocalFirstApp(db: AppDatabase, launchDone: Boolean = true) {
                         onPaletteChange = { id ->
                             paletteId = id
                             SettingsStore.setPalette(context, id)
+                        },
+                        customColor = customColor,
+                        darkNow = useDarkTheme,
+                        onCustomColor = { c ->
+                            customColor = c
+                            SettingsStore.setCustomColor(context, c)
+                            paletteId = PaletteId.CUSTOM
+                            SettingsStore.setPalette(context, PaletteId.CUSTOM)
                         },
                         glassOn = glassOn,
                         onGlassChange = { on ->
@@ -3829,6 +4022,9 @@ private fun DataScreen(
     onThemeChange: (String) -> Unit,
     paletteId: String,
     onPaletteChange: (String) -> Unit,
+    customColor: Int,
+    darkNow: Boolean,
+    onCustomColor: (Int) -> Unit,
     glassOn: Boolean,
     onGlassChange: (Boolean) -> Unit,
     hasCustomBg: Boolean,
@@ -3848,6 +4044,7 @@ private fun DataScreen(
     var reminderHour by remember { mutableStateOf(initialHour) }
     var reminderMinute by remember { mutableStateOf(initialMinute) }
     var pendingKind by remember { mutableStateOf<String?>(null) }
+    var showColorPicker by remember { mutableStateOf(false) }
     val saveAllMedia = rememberGallerySaver()
     var showAiExport by remember { mutableStateOf(false) }
     var aiWithMedia by remember { mutableStateOf(true) }
@@ -3994,7 +4191,7 @@ private fun DataScreen(
             onMessage(result.fold({ "数据已导入" }, { "导入失败：${it.message ?: "未知错误"}" }))
         }
     }
-    var page by rememberSaveable { mutableStateOf("main") }   // main | settings | privacy | about
+    var page by rememberSaveable { mutableStateOf("main") }   // main | settings | privacy | about | board
     var showUpdate by remember { mutableStateOf(false) }
     if (showUpdate) UpdateDialog(onDismiss = { showUpdate = false })
     if (page != "main") BackHandler(enabled = LocalTabActive.current) { page = "main" }
@@ -4095,8 +4292,10 @@ private fun DataScreen(
             var hasAccess by remember { mutableStateOf(AutoBook.hasAccess(ctx)) }
             var autoOn by remember { mutableStateOf(AutoBook.isEnabled(ctx)) }
             var askFirst by remember { mutableStateOf(AutoBook.askFirst(ctx)) }
+            var bgOk by remember { mutableStateOf(AutoBook.ignoresBatteryOpt(ctx)) }
             LifecycleResumeEffect(Unit) {
                 hasAccess = AutoBook.hasAccess(ctx)
+                bgOk = AutoBook.ignoresBatteryOpt(ctx)
                 onPauseOrDispose { }
             }
             Text("自动记账", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
@@ -4129,13 +4328,29 @@ private fun DataScreen(
                         HorizontalDivider()
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Column(Modifier.weight(1f)) {
+                                Text("允许后台运行", fontWeight = FontWeight.SemiBold)
+                                Text(if (bgOk) "已允许：关掉知行也能记" else "没允许的话，关掉知行后系统会停掉记账", style = MaterialTheme.typography.labelMedium, color = if (bgOk) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.error)
+                            }
+                            if (!bgOk) TextButton(onClick = { runCatching { ctx.startActivity(AutoBook.batteryOptIntent(ctx)) }.onFailure { runCatching { ctx.startActivity(AutoBook.appDetailsIntent(ctx)) } } }) { Text("去允许") }
+                        }
+                        HorizontalDivider()
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Column(Modifier.weight(1f)) {
+                                Text("自启动和后台耗电", fontWeight = FontWeight.SemiBold)
+                                Text("OPPO：应用详情 → 耗电管理，打开「允许自启动」和「允许后台行为」", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
+                            TextButton(onClick = { runCatching { ctx.startActivity(AutoBook.appDetailsIntent(ctx)) } }) { Text("去设置") }
+                        }
+                        HorizontalDivider()
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Column(Modifier.weight(1f)) {
                                 Text("试一下", fontWeight = FontWeight.SemiBold)
                                 Text("发一条示例通知，不会真的记账", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                             }
                             TextButton(onClick = { AutoBook.prompt(ctx, Payment(3650, "示例商家", "微信支付", "餐饮"), demo = true) }) { Text("试一下") }
                         }
                     }
-                    Text("只在本机识别，不联网；退款、收款、红包、转账不记。OPPO 记得给知行开「自启动」，不然后台会被关。", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text("只在本机识别，不联网；退款、收款、红包、转账不记。被系统停掉过的话，下次连上时会补记通知栏里 30 分钟内的付款。", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             }
         }
@@ -4168,7 +4383,7 @@ private fun DataScreen(
                     }
                     Spacer(Modifier.height(16.dp))
                     Text("主题颜色", fontWeight = FontWeight.SemiBold)
-                    Text("默认青绿；换一个色，主色、按钮、底部导航跟着变", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text("默认青绿；换一个色，主色、按钮、底部导航跟着变。「自定义」可以调任意颜色", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     Spacer(Modifier.height(10.dp))
                     Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         APP_PALETTES.forEach { palette ->
@@ -4178,11 +4393,29 @@ private fun DataScreen(
                                 selected = paletteId == palette.id
                             ) { onPaletteChange(palette.id) }
                         }
+                        PaletteChip(
+                            label = "自定义",
+                            dotColor = Color(customColor),
+                            selected = paletteId == PaletteId.CUSTOM
+                        ) { showColorPicker = true }
+                    }
+                    if (showColorPicker) {
+                        CustomColorSheet(
+                            initial = customColor,
+                            dark = darkNow,
+                            onDismiss = { showColorPicker = false },
+                            onApply = { c -> onCustomColor(c); showColorPicker = false; onMessage("主题色已换好") }
+                        )
                     }
                 }
             }
         }
         item { Spacer(Modifier.height(88.dp)) }
+    }
+    "board" -> Column(modifier.fillMaxSize().padding(horizontal = 16.dp)) {
+        SubHeader("贴纸板", "拖动摆放，两指缩放旋转；桌面可以加贴纸板小组件")
+        Spacer(Modifier.height(8.dp))
+        StickerBoardEditor(db, onMessage, Modifier.fillMaxWidth().weight(1f).padding(bottom = 96.dp))
     }
     "about" -> LazyColumn(modifier.fillMaxSize().padding(horizontal = 20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         item { SubHeader("关于知行", "v$versionName") }
@@ -4296,6 +4529,8 @@ private fun DataScreen(
         item {
             GlassCard(color = MaterialTheme.colorScheme.surface, shape = RoundedCornerShape(20.dp)) {
                 Column(Modifier.fillMaxWidth()) {
+                    MineRow(Icons.Default.Image, "贴纸板", "把记录的照片和小便签贴在夹板上，桌面也能看") { page = "board" }
+                    HorizontalDivider(Modifier.padding(start = 70.dp), color = MaterialTheme.colorScheme.onSurface.copy(alpha = .08f))
                     MineRow(Icons.Default.Settings, "设置", "头像和昵称、通知、主题和外观") { page = "settings" }
                     HorizontalDivider(Modifier.padding(start = 70.dp), color = MaterialTheme.colorScheme.onSurface.copy(alpha = .08f))
                     MineRow(Icons.Default.Lock, "隐私说明", "平时不联网，记录只存在这台手机") { page = "privacy" }
@@ -4837,4 +5072,327 @@ private fun UpdateDialog(onDismiss: () -> Unit) {
         },
         dismissButton = closeBtn
     )
+}
+
+// ======================= 贴纸板编辑 =======================
+
+/** 贴纸板上的一个按钮：玻璃胶囊，按下缩小。 */
+@Composable
+private fun BoardButton(label: String, icon: ImageVector, enabled: Boolean = true, onClick: () -> Unit) {
+    val src = remember { MutableInteractionSource() }
+    val shape = RoundedCornerShape(50)
+    Row(
+        Modifier.pressScale(src)
+            .then(if (LocalBackdrop.current != null) Modifier.glass(shape) else Modifier.clip(shape).background(MaterialTheme.colorScheme.surfaceVariant))
+            .border(1.dp, Color.White.copy(alpha = .25f), shape)
+            .clickable(interactionSource = src, indication = null, enabled = enabled, onClick = onClick)
+            .padding(horizontal = 14.dp, vertical = 10.dp)
+            .graphicsLayer { alpha = if (enabled) 1f else .4f },
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Icon(icon, contentDescription = null, modifier = Modifier.size(18.dp), tint = MaterialTheme.colorScheme.primary)
+        Spacer(Modifier.width(6.dp))
+        Text(label, style = MaterialTheme.typography.labelLarge)
+    }
+}
+
+/**
+ * 贴纸板编辑：拖动摆放，两指缩放旋转；选中后右下角圆点单指转和缩，上面有删除。
+ * 改动 0.5 秒后自动存，并刷新桌面小组件。
+ */
+@Composable
+private fun StickerBoardEditor(db: AppDatabase, onMessage: (String) -> Unit, modifier: Modifier = Modifier) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    val haptic = LocalHapticFeedback.current
+    var board by remember { mutableStateOf(com.swenhao10.localfirst.widget.StickerStore.load(context)) }
+    val history = remember { mutableStateListOf<com.swenhao10.localfirst.widget.BoardState>() }
+    var selected by remember { mutableStateOf<Long?>(null) }
+    var showPhotos by remember { mutableStateOf(false) }
+    var noteEdit by remember { mutableStateOf<com.swenhao10.localfirst.widget.Sticker?>(null) }
+    var dirty by remember { mutableStateOf(false) }
+    fun snapshot() { history.add(board); if (history.size > 40) history.removeAt(0) }
+    fun update(id: Long, f: (com.swenhao10.localfirst.widget.Sticker) -> com.swenhao10.localfirst.widget.Sticker) {
+        board = board.copy(stickers = board.stickers.map { if (it.id == id) f(it) else it }); dirty = true
+    }
+    fun bringToFront(id: Long) {
+        val s = board.stickers.firstOrNull { it.id == id } ?: return
+        if (board.stickers.lastOrNull()?.id != id) board = board.copy(stickers = board.stickers.filter { it.id != id } + s)
+    }
+    fun add(s: com.swenhao10.localfirst.widget.Sticker) {
+        if (board.stickers.size >= 30) { onMessage("一块板最多贴 30 张"); return }
+        snapshot(); board = board.copy(stickers = board.stickers + s); selected = s.id; dirty = true
+        haptic.performHapticFeedback(HapticFeedbackType.Confirm)
+    }
+    LaunchedEffect(board) {
+        if (!dirty) return@LaunchedEffect
+        delay(500)
+        withContext(Dispatchers.IO) { com.swenhao10.localfirst.widget.StickerStore.save(context, board) }
+        com.swenhao10.localfirst.widget.StickerWidgetBase.refreshAll(context)
+    }
+
+    Column(modifier) {
+        BoxWithConstraints(
+            Modifier.fillMaxWidth().weight(1f, fill = false),
+            contentAlignment = Alignment.TopCenter
+        ) {
+            // 板子按 1:1.2 放进可用空间
+            val bw = minOf(maxWidth, maxHeight / com.swenhao10.localfirst.widget.StickerArt.ASPECT)
+            val bh = bw * com.swenhao10.localfirst.widget.StickerArt.ASPECT
+            val density = LocalDensity.current
+            val wPx = with(density) { bw.toPx() }
+            val hPx = with(density) { bh.toPx() }
+            val basePx = (wPx * com.swenhao10.localfirst.widget.StickerArt.BASE).toInt().coerceAtLeast(40)
+            Box(
+                Modifier.size(bw, bh)
+                    .pointerInput(Unit) { detectTapGestures { selected = null } }
+            ) {
+                // 板子纹理有几万个颗粒，只在换板子或尺寸变了时画一次，拖贴纸时不重画
+                val boardStyle = board.board
+                val boardImg by produceState<androidx.compose.ui.graphics.ImageBitmap?>(null, boardStyle, wPx.toInt()) {
+                    value = withContext(Dispatchers.Default) {
+                        val b = android.graphics.Bitmap.createBitmap(wPx.toInt().coerceAtLeast(1), hPx.toInt().coerceAtLeast(1), android.graphics.Bitmap.Config.ARGB_8888)
+                        com.swenhao10.localfirst.widget.StickerArt.drawBoard(android.graphics.Canvas(b), wPx, hPx, boardStyle)
+                        b.asImageBitmap()
+                    }
+                }
+                boardImg?.let { Image(it, contentDescription = null, modifier = Modifier.fillMaxSize()) }
+                if (board.stickers.isEmpty()) {
+                    Column(Modifier.align(Alignment.Center).padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                        Text("还没有贴纸", fontWeight = FontWeight.Bold, color = Color.White)
+                        Text("点下面「照片」或「便签」贴一张", style = MaterialTheme.typography.labelMedium, color = Color.White.copy(alpha = .85f))
+                    }
+                }
+                board.stickers.forEach { s ->
+                    key(s.id) {
+                        val art by produceState<androidx.compose.ui.graphics.ImageBitmap?>(null, s.artKey, basePx) {
+                            value = withContext(Dispatchers.IO) { runCatching { com.swenhao10.localfirst.widget.StickerArt.renderSticker(s, basePx).asImageBitmap() }.getOrNull() }
+                        }
+                        val aOrNull = art
+                        if (aOrNull != null) { val a: androidx.compose.ui.graphics.ImageBitmap = aOrNull
+                        val isSel = selected == s.id
+                        val lift by animateFloatAsState(if (isSel) 1.04f else 1f, spring(dampingRatio = 0.7f, stiffness = 500f), label = "lift")
+                        Box(
+                            Modifier
+                                .offset { IntOffset((s.x * wPx - a.width / 2f).roundToInt(), (s.y * hPx - a.height / 2f).roundToInt()) }
+                                .size(with(density) { a.width.toDp() }, with(density) { a.height.toDp() })
+                                .pointerInput(s.id, wPx, hPx) {
+                                    awaitEachGesture {
+                                        val down = awaitFirstDown()
+                                        down.consume()
+                                        selected = s.id
+                                        snapshot(); bringToFront(s.id)
+                                        haptic.performHapticFeedback(HapticFeedbackType.SegmentTick)
+                                        do {
+                                            val ev = awaitPointerEvent()
+                                            val pan = ev.calculatePan()
+                                            val zoom = ev.calculateZoom()
+                                            val rot = ev.calculateRotation()
+                                            if (pan != Offset.Zero || zoom != 1f || rot != 0f) {
+                                                update(s.id) { cur ->
+                                                    cur.copy(
+                                                        x = (cur.x + pan.x / wPx).coerceIn(0.02f, 0.98f),
+                                                        y = (cur.y + pan.y / hPx).coerceIn(0.06f, 0.98f),
+                                                        scale = (cur.scale * zoom).coerceIn(0.35f, 2.6f),
+                                                        rot = cur.rot + rot
+                                                    )
+                                                }
+                                            }
+                                            ev.changes.forEach { if (it.positionChanged()) it.consume() }
+                                        } while (ev.changes.any { it.pressed })
+                                    }
+                                }
+                                .graphicsLayer {
+                                    scaleX = s.scale * lift; scaleY = s.scale * lift; rotationZ = s.rot
+                                }
+                        ) {
+                            Image(a, contentDescription = null, modifier = Modifier.fillMaxSize())
+                        }
+                    }
+                    }
+                }
+                // 选中的贴纸：右下角转/缩把手 + 上方删除
+                val sel = board.stickers.firstOrNull { it.id == selected }
+                if (sel != null) {
+                    val half = basePx * sel.scale * 0.55f
+                    val rad = Math.toRadians(sel.rot.toDouble())
+                    val cx = sel.x * wPx; val cy = sel.y * hPx
+                    val hx = cx + (half * kotlin.math.cos(rad) - half * kotlin.math.sin(rad)).toFloat()
+                    val hy = cy + (half * kotlin.math.sin(rad) + half * kotlin.math.cos(rad)).toFloat()
+                    val knob = with(density) { 30.dp.toPx() }
+                    Box(
+                        Modifier
+                            .offset { IntOffset((hx - knob / 2).roundToInt(), (hy - knob / 2).roundToInt()) }
+                            .size(30.dp)
+                            .shadow(4.dp, CircleShape)
+                            .clip(CircleShape)
+                            .background(Color.White)
+                            .padding(5.dp)
+                            .clip(CircleShape)
+                            .background(MaterialTheme.colorScheme.primary)
+                            .pointerInput(sel.id, wPx, hPx) {
+                                awaitEachGesture {
+                                    val down = awaitFirstDown(); down.consume()
+                                    snapshot()
+                                    val start = board.stickers.firstOrNull { it.id == sel.id } ?: return@awaitEachGesture
+                                    val c0 = Offset(start.x * wPx, start.y * hPx)
+                                    val r0 = Math.toRadians(start.rot.toDouble())
+                                    val h0 = basePx * start.scale * 0.55f
+                                    var finger = Offset(c0.x + (h0 * kotlin.math.cos(r0) - h0 * kotlin.math.sin(r0)).toFloat(), c0.y + (h0 * kotlin.math.sin(r0) + h0 * kotlin.math.cos(r0)).toFloat())
+                                    val v0 = finger - c0
+                                    val a0 = kotlin.math.atan2(v0.y, v0.x); val d0 = v0.getDistance().coerceAtLeast(1f)
+                                    do {
+                                        val ev = awaitPointerEvent()
+                                        val ch = ev.changes.firstOrNull() ?: break
+                                        finger += ch.positionChange()
+                                        ch.consume()
+                                        val v = finger - c0
+                                        val ang = Math.toDegrees((kotlin.math.atan2(v.y, v.x) - a0).toDouble()).toFloat()
+                                        val k = v.getDistance() / d0
+                                        update(sel.id) { it.copy(rot = start.rot + ang, scale = (start.scale * k).coerceIn(0.35f, 2.6f)) }
+                                    } while (ev.changes.any { it.pressed })
+                                }
+                            }
+                    )
+                    val del = with(density) { 34.dp.toPx() }
+                    Box(
+                        Modifier
+                            .offset { IntOffset((cx - del / 2).roundToInt(), (cy - half * 1.25f - del).roundToInt().coerceAtLeast(0)) }
+                            .size(34.dp)
+                            .shadow(4.dp, CircleShape)
+                            .clip(CircleShape)
+                            .background(Color.White)
+                            .clickable {
+                                snapshot()
+                                board = board.copy(stickers = board.stickers.filter { it.id != sel.id }); dirty = true
+                                selected = null
+                                haptic.performHapticFeedback(HapticFeedbackType.Confirm)
+                            },
+                        contentAlignment = Alignment.Center
+                    ) { Icon(Icons.Default.Delete, contentDescription = "删除", tint = MaterialTheme.colorScheme.error, modifier = Modifier.size(18.dp)) }
+                }
+            }
+        }
+        Spacer(Modifier.height(12.dp))
+        val sel = board.stickers.firstOrNull { it.id == selected }
+        AnimatedVisibility(visible = sel != null, enter = fadeIn(tween(150)) + expandVertically(), exit = fadeOut(tween(120)) + shrinkVertically()) {
+            Row(Modifier.fillMaxWidth().padding(bottom = 8.dp).horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                val cur = sel
+                if (cur?.type == "photo") {
+                    BoardButton(if (cur.style == "polaroid") "换成白边贴纸" else "换成拍立得", Icons.Default.Image) {
+                        snapshot(); update(cur.id) { it.copy(style = if (it.style == "polaroid") "cut" else "polaroid") }
+                    }
+                }
+                if (cur?.type == "note") {
+                    BoardButton("改文字", Icons.Default.Edit) { noteEdit = cur }
+                }
+                if (cur != null) {
+                    BoardButton("摆正", Icons.Default.Check) { snapshot(); update(cur.id) { it.copy(rot = 0f) } }
+                }
+            }
+        }
+        Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            BoardButton("照片", Icons.Default.Image) { showPhotos = true }
+            BoardButton("便签", Icons.Default.Edit) { noteEdit = com.swenhao10.localfirst.widget.Sticker(id = 0, type = "note") }
+            BoardButton("换板子·" + com.swenhao10.localfirst.widget.StickerArt.boardLabel(board.board), Icons.Default.Folder) {
+                val all = com.swenhao10.localfirst.widget.StickerArt.BOARDS
+                snapshot(); board = board.copy(board = all[(all.indexOf(board.board) + 1) % all.size]); dirty = true
+            }
+            BoardButton("撤销", Icons.AutoMirrored.Filled.Undo, enabled = history.isNotEmpty()) {
+                if (history.isNotEmpty()) { board = history.removeAt(history.size - 1); dirty = true; selected = null }
+            }
+        }
+    }
+
+    if (showPhotos) {
+        var paths by remember { mutableStateOf<List<String>?>(null) }
+        LaunchedEffect(Unit) {
+            paths = withContext(Dispatchers.IO) {
+                db.records().all().flatMap { it.images() }.filter { !isVideoPath(it) && File(it).exists() }.distinct().take(90)
+            }
+        }
+        ZhAlertDialog(
+            onDismissRequest = { showPhotos = false },
+            title = { Text("从记录里选照片") },
+            dismissButton = null,
+            confirmButton = { TextButton(onClick = { showPhotos = false }) { Text("关闭") } },
+            text = {
+                val list = paths
+                when {
+                    list == null -> Text("正在读取…")
+                    list.isEmpty() -> Text("记录里还没有照片。先去「记录」拍一张或从相册选一张吧。")
+                    else -> FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        list.forEach { p ->
+                            val thumb by produceState<androidx.compose.ui.graphics.ImageBitmap?>(null, p) {
+                                value = withContext(Dispatchers.IO) { com.swenhao10.localfirst.widget.StickerArt.loadPhoto(p, 240)?.asImageBitmap() }
+                            }
+                            val src = remember { MutableInteractionSource() }
+                            Box(
+                                Modifier.size(84.dp).pressScale(src).clip(RoundedCornerShape(14.dp))
+                                    .background(MaterialTheme.colorScheme.onSurface.copy(alpha = .08f))
+                                    .clickable(interactionSource = src, indication = null) {
+                                        showPhotos = false
+                                        add(com.swenhao10.localfirst.widget.Sticker(
+                                            id = System.currentTimeMillis(), type = "photo", path = p,
+                                            x = 0.35f + kotlin.random.Random.nextFloat() * 0.3f, y = 0.35f + kotlin.random.Random.nextFloat() * 0.3f,
+                                            rot = kotlin.random.Random.nextFloat() * 14f - 7f
+                                        ))
+                                    }
+                            ) {
+                                thumb?.let { Image(it, contentDescription = null, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize()) }
+                            }
+                        }
+                    }
+                }
+            }
+        )
+    }
+
+    noteEdit?.let { editing ->
+        var text by remember(editing.id) { mutableStateOf(editing.text) }
+        var color by remember(editing.id) { mutableStateOf(editing.color) }
+        ZhAlertDialog(
+            onDismissRequest = { noteEdit = null },
+            title = { Text(if (editing.id == 0L) "写一张小便签" else "改便签") },
+            dismissButton = { TextButton(onClick = { noteEdit = null }) { Text("取消") } },
+            confirmButton = {
+                Button(enabled = text.isNotBlank(), onClick = {
+                    if (editing.id == 0L) {
+                        add(editing.copy(id = System.currentTimeMillis(), text = text.trim(), color = color,
+                            x = 0.35f + kotlin.random.Random.nextFloat() * 0.3f, y = 0.4f + kotlin.random.Random.nextFloat() * 0.3f,
+                            rot = kotlin.random.Random.nextFloat() * 10f - 5f))
+                    } else {
+                        snapshot(); update(editing.id) { it.copy(text = text.trim(), color = color) }
+                    }
+                    noteEdit = null
+                }) { Text(if (editing.id == 0L) "贴上去" else "改好了") }
+            },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    OutlinedTextField(
+                        value = text, onValueChange = { if (it.length <= 60) text = it },
+                        placeholder = { Text("今天背了 30 个词") },
+                        minLines = 2, maxLines = 4, modifier = Modifier.fillMaxWidth()
+                    )
+                    Text("纸的颜色", style = MaterialTheme.typography.labelLarge)
+                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        com.swenhao10.localfirst.widget.StickerArt.NOTE_COLORS.forEach { c ->
+                            val on = c == color
+                            val ringRaw by animateFloatAsState(if (on) 1f else 0f, spring(dampingRatio = 0.6f, stiffness = 500f), label = "noteRing")
+                            val ring = ringRaw.coerceIn(0f, 1f)
+                            Box(
+                                Modifier.size(38.dp)
+                                    .border((2.5f * ring).dp, MaterialTheme.colorScheme.primary.copy(alpha = ring), CircleShape)
+                                    .padding((4f * ring).dp)
+                                    .clip(CircleShape)
+                                    .background(Color(c))
+                                    .border(1.dp, Color.Black.copy(alpha = .08f), CircleShape)
+                                    .clickable { color = c }
+                            )
+                        }
+                    }
+                }
+            }
+        )
+    }
 }
