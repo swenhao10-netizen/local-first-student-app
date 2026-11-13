@@ -957,7 +957,9 @@ private fun CustomColorSheet(initial: Int, dark: Boolean, onDismiss: () -> Unit,
                 Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                     CUSTOM_PRESETS.forEach { c ->
                         val selected = (c and 0xFFFFFF) == (argb and 0xFFFFFF)
-                        val ring by animateFloatAsState(if (selected) 1f else 0f, spring(dampingRatio = 0.6f, stiffness = 500f), label = "ring")
+                        // 弹簧会过冲到 0 以下 / 1 以上，padding 和描边不能是负数，夹一下
+                        val ringRaw by animateFloatAsState(if (selected) 1f else 0f, spring(dampingRatio = 0.6f, stiffness = 500f), label = "ring")
+                        val ring = ringRaw.coerceIn(0f, 1f)
                         val src = remember { MutableInteractionSource() }
                         Box(
                             Modifier.size(38.dp).pressScale(src)
