@@ -189,6 +189,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -1053,42 +1054,25 @@ private fun GradientSlider(value: Float, brush: Brush, thumbColor: Color, onChan
     val scale by animateFloatAsState(if (pressed) 1.25f else 1f, spring(dampingRatio = 0.6f, stiffness = 500f), label = "thumb")
     val haptic = LocalHapticFeedback.current
     val density = LocalDensity.current
+    // pointerInput(Unit) 只建一次，必须读最新的 onChange，否则拖动写到旧的颜色槽里（看起来拖不动）
+    val latestOnChange by rememberUpdatedState(onChange)
     Box(
-        Modifier.fillMaxWidth().height(36.dp)
+        Modifier.fillMaxWidth().height(40.dp)
             .onSizeChanged { widthPx = it.width.toFloat().coerceAtLeast(1f) }
             .pointerInput(Unit) {
-                // 横着拖才算拖滑条；竖着拖让给外面的上下滚动；点一下（没拖）松手时跳到点的位置
+                // 按下就跟手：先跳到手指位置，然后一路跟着拖
                 awaitEachGesture {
-                    val down = awaitFirstDown()
-                    val slop = viewConfiguration.touchSlop
-                    var dragging = false
-                    var dx = 0f
-                    var dy = 0f
+                    val down = awaitFirstDown(requireUnconsumed = false)
+                    down.consume()
+                    pressed = true
+                    haptic.performHapticFeedback(HapticFeedbackType.SegmentTick)
+                    latestOnChange((down.position.x / widthPx).coerceIn(0f, 1f))
                     while (true) {
                         val ev = awaitPointerEvent()
                         val c = ev.changes.firstOrNull { it.id == down.id } ?: break
-                        if (!c.pressed) {
-                            if (!dragging && !c.isConsumed) {
-                                haptic.performHapticFeedback(HapticFeedbackType.SegmentTick)
-                                onChange((down.position.x / widthPx).coerceIn(0f, 1f))
-                            }
-                            break
-                        }
-                        if (dragging) {
-                            onChange((c.position.x / widthPx).coerceIn(0f, 1f))
-                            c.consume()
-                            continue
-                        }
-                        if (c.isConsumed) break
-                        dx += c.position.x - c.previousPosition.x
-                        dy += c.position.y - c.previousPosition.y
-                        if (kotlin.math.abs(dx) > slop && kotlin.math.abs(dx) >= kotlin.math.abs(dy)) {
-                            dragging = true
-                            pressed = true
-                            haptic.performHapticFeedback(HapticFeedbackType.SegmentTick)
-                            onChange((c.position.x / widthPx).coerceIn(0f, 1f))
-                            c.consume()
-                        } else if (kotlin.math.abs(dy) > slop) break
+                        if (!c.pressed) break
+                        if (c.position != c.previousPosition) latestOnChange((c.position.x / widthPx).coerceIn(0f, 1f))
+                        c.consume()
                     }
                     pressed = false
                 }
@@ -1137,7 +1121,11 @@ private fun CustomColorSheet(
     var editEnd by remember { mutableStateOf(false) }
     val o = if (!gradMode) 0 else if (editEnd) 6 else 3
     val hue = hsvState[o]; val sat = hsvState[o + 1]; val value = hsvState[o + 2]
-    fun setHsv(h: Float = hue, s: Float = sat, v: Float = value) { hsvState[o] = h; hsvState[o + 1] = s; hsvState[o + 2] = v }
+    // 每次都读当前在编辑的槽和最新数值，不用组合时的旧值
+    fun setHsv(h: Float? = null, s: Float? = null, v: Float? = null) {
+        val i = if (!gradMode) 0 else if (editEnd) 6 else 3
+        h?.let { hsvState[i] = it }; s?.let { hsvState[i + 1] = it }; v?.let { hsvState[i + 2] = it }
+    }
     fun argbAt(i: Int) = android.graphics.Color.HSVToColor(floatArrayOf(hsvState[i], hsvState[i + 1], hsvState[i + 2]))
     val argb = argbAt(o)
     val gA = argbAt(3); val gB = argbAt(6)
@@ -1164,7 +1152,7 @@ private fun CustomColorSheet(
         scrollText = false,
         text = {
             // 单色/渐变切换固定在标题下面；其余内容在唯一一个上下滚动里（面板外面这层不再套滚动），按钮固定在底部。
-            val maxH = (LocalConfiguration.current.screenHeightDp * 0.6f).dp
+            val maxH = (LocalConfiguration.current.screenHeightDp * 0.75f).dp
             Column(Modifier.heightIn(max = maxH)) {
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     ChoiceChip("单色", !gradMode) { gradMode = false }
