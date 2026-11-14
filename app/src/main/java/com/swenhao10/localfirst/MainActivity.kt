@@ -131,6 +131,7 @@ import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.Mood
 import androidx.compose.ui.text.drawText
 import androidx.compose.ui.graphics.drawscope.clipRect
 import androidx.compose.material3.AlertDialog
@@ -249,6 +250,12 @@ import com.swenhao10.localfirst.data.formatDuration
 import com.swenhao10.localfirst.data.saveToGallery
 import com.swenhao10.localfirst.data.galleryNeedsPermission
 import com.swenhao10.localfirst.data.AiExport
+import com.swenhao10.localfirst.data.FaceStyle
+import com.swenhao10.localfirst.data.Mood
+import com.swenhao10.localfirst.data.MoodStore
+import com.swenhao10.localfirst.data.dominantMoodId
+import com.swenhao10.localfirst.ui.MoodFace
+import com.swenhao10.localfirst.ui.MoodFaceOf
 import android.content.Intent
 import android.content.ClipData
 import android.content.ClipboardManager
@@ -1611,6 +1618,7 @@ private fun LocalFirstApp(db: AppDatabase, launchDone: Boolean = true) {
     }
     val snackbarHostState = remember { SnackbarHostState() }
     val context = LocalContext.current
+    remember { MoodStore.load(context) }
     val cardsDao = remember(db) { db.cards() }
     val recordsDao = remember(db) { db.records() }
     val unknownDao = remember(db) { db.unknownWords() }
@@ -1817,7 +1825,14 @@ private fun LocalFirstApp(db: AppDatabase, launchDone: Boolean = true) {
                         onSearch = { message = "还没有记录" },
                         modifier = Modifier.padding(padding),
                         onEditRecord = { record -> openAdd(record) },
-                        onDeleteRecord = { record -> deleteRecordWithUndo(record) }
+                        onDeleteRecord = { record -> deleteRecordWithUndo(record) },
+                        onQuickMood = { mood ->
+                            scope.launch {
+                                val newId = withContext(Dispatchers.IO) { recordsDao.insert(RecordEntry(kind = "daily", moodId = mood.id)) }
+                                haptic.performHapticFeedback(HapticFeedbackType.Confirm)
+                                showUndo("记下了", { recordsDao.delete(newId) }, {})
+                            }
+                        }
                     )
                     Tab.WORDS -> WordsScreen(
                         packWords = packWords,
@@ -1931,7 +1946,7 @@ private fun LocalFirstApp(db: AppDatabase, launchDone: Boolean = true) {
                 onCancel = {
                     showAddRecord = false
                 },
-                onPublish = { text, newUris, keptPaths, amountCents, category, moneyKind ->
+                onPublish = { text, newUris, keptPaths, amountCents, category, moneyKind, moodId ->
                     scope.launch {
                         val addedPaths = newUris.mapIndexedNotNull { i, uri ->
                             // 图片和视频都复制一份到 App 里：相册里的原文件删了，记录里的还在
@@ -1952,7 +1967,8 @@ private fun LocalFirstApp(db: AppDatabase, launchDone: Boolean = true) {
                                         imagePaths = finalPaths.takeIf { it.size > 1 }?.joinToString("|"),
                                         amountCents = amountCents ?: 0L,
                                         category = category,
-                                        moneyKind = moneyKind
+                                        moneyKind = moneyKind,
+                                        moodId = moodId
                                     )
                                 )
                             } else {
@@ -1964,7 +1980,8 @@ private fun LocalFirstApp(db: AppDatabase, launchDone: Boolean = true) {
                                         imagePaths = finalPaths.takeIf { it.size > 1 }?.joinToString("|"),
                                         amountCents = amountCents ?: 0L,
                                         category = category,
-                                        moneyKind = moneyKind
+                                        moneyKind = moneyKind,
+                                        moodId = moodId
                                     )
                                 )
                             }
@@ -2049,7 +2066,8 @@ private fun RecordScreen(
     onSearch: () -> Unit,
     modifier: Modifier,
     onEditRecord: (RecordEntry) -> Unit,
-    onDeleteRecord: (RecordEntry) -> Unit
+    onDeleteRecord: (RecordEntry) -> Unit,
+    onQuickMood: (Mood) -> Unit = {}
 ) {
     var pendingAction by remember { mutableStateOf<RecordEntry?>(null) }
     val saveRecordMedia = rememberGallerySaver()
@@ -2184,6 +2202,9 @@ private fun RecordScreen(
                     }
                 }
             }
+            Spacer(Modifier.height(14.dp))
+            // 心情卡放在 header 这一项里：「跳到某天」按项序号算位置，不能多出新的项
+            MoodTodayCard(records = records, onPick = onQuickMood)
             Spacer(Modifier.height(14.dp))
         }
         if (records.isEmpty()) {
@@ -2412,7 +2433,9 @@ private fun RecordImages(paths: List<String>, modifier: Modifier = Modifier, onI
 @Composable
 private fun TimelineRecord(record: RecordEntry, onClick: () -> Unit, onLongPress: () -> Unit, onImageClick: (Int) -> Unit = {}) {
     val images = record.images()
-    val dotColor = recordDotColor(record)
+    val mood = MoodStore.find(record.moodId)
+    val moodOnly = mood != null && record.kind == "daily" && record.text.isBlank() && images.isEmpty()
+    val dotColor = mood?.let { Color(it.color) } ?: recordDotColor(record)
     val lineColor = MaterialTheme.colorScheme.outlineVariant
     Row(
         modifier = Modifier
@@ -2421,12 +2444,17 @@ private fun TimelineRecord(record: RecordEntry, onClick: () -> Unit, onLongPress
             .combinedClickable(onClick = onClick, onLongClick = onLongPress)
             .padding(bottom = 6.dp)
     ) {
-        Text(
-            timeText(record.createdAt),
-            style = MaterialTheme.typography.labelMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.width(44.dp).padding(top = 4.dp)
-        )
+        Column(Modifier.width(44.dp).padding(top = 4.dp)) {
+            Text(
+                timeText(record.createdAt),
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            if (mood != null && !moodOnly) {
+                Spacer(Modifier.height(6.dp))
+                MoodFace(mood, 22.dp)
+            }
+        }
         Box(
             modifier = Modifier
                 .width(20.dp)
@@ -2451,6 +2479,7 @@ private fun TimelineRecord(record: RecordEntry, onClick: () -> Unit, onLongPress
                 "expense" -> ExpenseLine(record, onImageClick)
                 "study" -> StudyLine(record)
                 else -> {
+                    if (moodOnly && mood != null) MoodFace(mood, 38.dp)
                     if (record.text.isNotBlank()) {
                         Text(record.text, style = MaterialTheme.typography.bodyLarge, lineHeight = MaterialTheme.typography.bodyLarge.fontSize * 1.45f)
                     }
@@ -2799,6 +2828,10 @@ private fun RecordItemCard(record: RecordEntry, onDelete: () -> Unit, showDate: 
                     "study" -> "背单词"
                     else -> "日常"
                 }
+                MoodStore.find(record.moodId)?.let { m ->
+                    MoodFace(m, 26.dp)
+                    Spacer(Modifier.width(8.dp))
+                }
                 Surface(color = MaterialTheme.colorScheme.primaryContainer, shape = RoundedCornerShape(10.dp)) {
                     Text(kindLabel, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onPrimaryContainer, modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp))
                 }
@@ -2839,9 +2872,10 @@ private fun AddRecordScreen(
     editing: RecordEntry? = null,
     active: Boolean = true,
     onCancel: () -> Unit,
-    onPublish: (text: String, newUris: List<Uri>, keptPaths: List<String>, amountCents: Long?, category: String?, moneyKind: String?) -> Unit
+    onPublish: (text: String, newUris: List<Uri>, keptPaths: List<String>, amountCents: Long?, category: String?, moneyKind: String?, moodId: String?) -> Unit
 ) {
     var text by remember { mutableStateOf(editing?.text ?: "") }
+    var moodId by remember { mutableStateOf(editing?.moodId) }
     // 新的图（相册/拍照选的）和编辑时留下的旧图分开存，发布时再合并
     val newUris = remember { mutableStateListOf<Uri>() }
     val keptPaths = remember { mutableStateListOf<String>().apply { addAll(editing?.images() ?: emptyList()) } }
@@ -2897,14 +2931,14 @@ private fun AddRecordScreen(
         }
     }
     val amountCents = amount.toDoubleOrNull()?.let { (it * 100).toLong() }?.takeIf { it > 0 }
-    val canPublish = text.isNotBlank() || totalImages > 0 || (recordMoney && amountCents != null)
+    val canPublish = text.isNotBlank() || totalImages > 0 || (recordMoney && amountCents != null) || moodId != null
     // 草稿有没有改动：新发的看有没有填东西；编辑的看和原来比有没有变
     val origImages = remember { editing?.images() ?: emptyList() }
     val origAmount = remember { editing?.amountCents?.takeIf { it > 0 }?.let { "%.2f".format(Locale.CHINA, it / 100.0) } ?: "" }
     val dirty = if (editing == null) {
-        text.isNotBlank() || totalImages > 0 || amount.isNotBlank()
+        text.isNotBlank() || totalImages > 0 || amount.isNotBlank() || moodId != null
     } else {
-        text != editing.text || newUris.isNotEmpty() || keptPaths.toList() != origImages ||
+        text != editing.text || moodId != editing.moodId || newUris.isNotEmpty() || keptPaths.toList() != origImages ||
             recordMoney != ((editing.amountCents ?: 0L) > 0L) || amount != origAmount ||
             (recordMoney && (moneyKind != (editing.moneyKind ?: "expense") || category != (editing.category ?: category)))
     }
@@ -2921,7 +2955,8 @@ private fun AddRecordScreen(
                 text.trim(), newUris.toList(), keptPaths.toList(),
                 if (recordMoney) amountCents else null,
                 if (recordMoney) category else null,
-                if (recordMoney) moneyKind else null
+                if (recordMoney) moneyKind else null,
+                moodId
             )
         }
     }
@@ -2991,6 +3026,22 @@ private fun AddRecordScreen(
                 modifier = Modifier.weight(1f).verticalScroll(rememberScrollState()).padding(horizontal = 16.dp),
                 verticalArrangement = Arrangement.spacedBy(14.dp)
             ) {
+                // 心情：一排专属表情，点一下选上，再点取消
+                Surface(color = MaterialTheme.colorScheme.surface, shape = RoundedCornerShape(20.dp), modifier = Modifier.fillMaxWidth()) {
+                    val picked = MoodStore.find(moodId)
+                    val moodList = MoodStore.visible().let { v -> if (picked != null && v.none { it.id == picked.id }) listOf(picked) + v else v }
+                    Row(
+                        Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 10.dp, vertical = 14.dp),
+                        horizontalArrangement = Arrangement.spacedBy(2.dp)
+                    ) {
+                        moodList.forEach { m ->
+                            MoodPickItem(m, selected = moodId == m.id, dimmed = moodId != null && moodId != m.id) {
+                                haptic.performHapticFeedback(HapticFeedbackType.SegmentTick)
+                                moodId = if (moodId == m.id) null else m.id
+                            }
+                        }
+                    }
+                }
                 // 第一张卡：文字 + 字数 + 图片
                 Surface(color = MaterialTheme.colorScheme.surface, shape = RoundedCornerShape(20.dp), modifier = Modifier.fillMaxWidth()) {
                     Column(Modifier.padding(16.dp)) {
@@ -4201,6 +4252,11 @@ private fun OverviewScreen(records: List<RecordEntry>, wordCount: Int, modifier:
                 StatTile("$wordCount", "个单词", Modifier.weight(1f))
             }
         }
+        // 心情：本月最多的心情 + 情绪趋势；这个月没记心情就不显示
+        val monthMoodRecords = monthRecords.filter { MoodStore.find(it.moodId) != null }
+        if (monthMoodRecords.isNotEmpty()) {
+            item(key = "mood-month") { MoodMonthCard(monthMoodRecords, year, month) }
+        }
         // 这个月花在哪：按分类汇总本月支出，从多到少，没有支出就不显示
         val byCategory = monthRecords
             .filter { it.kind == "expense" && it.moneyKind == "expense" && (it.amountCents ?: 0) > 0 }
@@ -4285,6 +4341,7 @@ private fun OverviewScreen(records: List<RecordEntry>, wordCount: Int, modifier:
                                 Row(Modifier.fillMaxWidth()) {
                                     week.forEach { day ->
                                         val dayRecords = if (day == null) emptyList() else cellRecords[day].orEmpty()
+                                        val dayMood = if (day == null) null else MoodStore.find(dominantMoodId(dayRecords))
                                         val isToday = isThisMonth && day == now.get(Calendar.DAY_OF_MONTH)
                                         val selected = day != null && day == selectedDay && ym == year * 12 + month
                                         val calAcc = LocalAccent.current
@@ -4292,6 +4349,7 @@ private fun OverviewScreen(records: List<RecordEntry>, wordCount: Int, modifier:
                                             when {
                                                 selected && calAcc != null -> Color.Transparent
                                                 selected -> MaterialTheme.colorScheme.primaryContainer
+                                                dayMood != null -> Color(dayMood.color).copy(alpha = .28f)
                                                 dayRecords.isNotEmpty() -> MaterialTheme.colorScheme.surfaceVariant
                                                 else -> Color.Transparent
                                             },
@@ -4322,7 +4380,8 @@ private fun OverviewScreen(records: List<RecordEntry>, wordCount: Int, modifier:
                                                             else -> MaterialTheme.colorScheme.onSurface
                                                         }
                                                     )
-                                                    dayRecords.take(2).forEach { r ->
+                                                    if (dayMood != null) MoodFace(dayMood, 16.dp, Modifier.padding(vertical = 1.dp))
+                                                    dayRecords.filter { labelFor(it).isNotEmpty() }.take(if (dayMood != null) 1 else 2).forEach { r ->
                                                         Text(
                                                             labelFor(r),
                                                             style = MaterialTheme.typography.labelSmall,
@@ -4574,12 +4633,12 @@ private fun DataScreen(
     var page by rememberSaveable { mutableStateOf("main") }   // main | settings | privacy | about | board
     var showUpdate by remember { mutableStateOf(false) }
     if (showUpdate) UpdateDialog(onDismiss = { showUpdate = false })
-    if (page != "main") BackHandler(enabled = LocalTabActive.current) { page = "main" }
+    if (page != "main") BackHandler(enabled = LocalTabActive.current) { page = if (page == "moods") "settings" else "main" }
     @Composable
-    fun SubHeader(title: String, sub: String = "") {
+    fun SubHeader(title: String, sub: String = "", back: String = "main") {
         Spacer(Modifier.height(4.dp))
         Row(verticalAlignment = Alignment.CenterVertically) {
-            IconButton(onClick = { page = "main" }) { Icon(Icons.Default.ChevronLeft, contentDescription = "返回") }
+            IconButton(onClick = { page = back }) { Icon(Icons.Default.ChevronLeft, contentDescription = "返回") }
             Column(Modifier.weight(1f)) {
                 Text(title, style = accentTitle(MaterialTheme.typography.headlineSmall), fontWeight = FontWeight.Bold)
                 if (sub.isNotEmpty()) Text(sub, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -4591,7 +4650,7 @@ private fun DataScreen(
     AnimatedContent(
         targetState = page,
         transitionSpec = {
-            val fwd = targetState != "main"
+            val fwd = targetState != "main" && !(targetState == "settings" && initialState == "moods")
             if (reducePage) fadeIn(tween(Motion.SMALL)) togetherWith fadeOut(tween(90))
             else (slideInHorizontally(tween(250, easing = Motion.EaseOut)) { if (fwd) it / 5 else -it / 5 } + fadeIn(tween(Motion.STATE)))
                 .togetherWith(slideOutHorizontally(tween(Motion.STATE, easing = Motion.EaseOut)) { if (fwd) -it / 10 else it / 10 } + fadeOut(tween(120)))
@@ -4725,6 +4784,13 @@ private fun DataScreen(
             }
         }
         item {
+            Text("心情", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+            Spacer(Modifier.height(8.dp))
+            GlassCard(color = MaterialTheme.colorScheme.surface, shape = RoundedCornerShape(20.dp)) {
+                MineRow(Icons.Default.Mood, "管理心情") { page = "moods" }
+            }
+        }
+        item {
             Text("外观", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
             Spacer(Modifier.height(8.dp))
             GlassCard(color = MaterialTheme.colorScheme.surface, shape = RoundedCornerShape(20.dp)) {
@@ -4792,6 +4858,7 @@ private fun DataScreen(
         }
         item { Spacer(Modifier.height(88.dp)) }
     }
+    "moods" -> MoodManagePage(modifier) { SubHeader("管理心情", back = "settings") }
     "board" -> Column(modifier.fillMaxSize().padding(horizontal = 16.dp)) {
         SubHeader("贴纸板")
         Spacer(Modifier.height(8.dp))
@@ -5192,7 +5259,7 @@ private fun monthCells(year: Int, month: Int): List<Int?> {
 private fun labelFor(record: RecordEntry): String = when (record.kind) {
     "expense" -> (if (record.moneyKind == "income") "+" else "-") + formatMoneyShort(record.amountCents ?: 0)
     "study" -> "背单词"
-    else -> if (record.text.isNotBlank()) record.text.take(4) else if (record.images().any { isVideoPath(it) }) "视频" else "图片"
+    else -> if (record.text.isNotBlank()) record.text.take(4) else if (record.images().isEmpty()) "" else if (record.images().any { isVideoPath(it) }) "视频" else "图片"
 }
 
 /** 按图片路径解码一张缩略图（本机文件不存在或损坏返回 null）。 */
@@ -5754,4 +5821,331 @@ private fun StickerBoardEditor(db: AppDatabase, onMessage: (String) -> Unit, mod
             }
         )
     }
+}
+
+// ───────────────────────────── 心情 ─────────────────────────────
+
+/** 记录首页顶部：今天感觉怎么样（点脸直接记一条心情）+ 本周每天的主心情。 */
+@Composable
+private fun MoodTodayCard(records: List<RecordEntry>, onPick: (Mood) -> Unit) {
+    val moods = MoodStore.visible()
+    val todayKey = dayKey(System.currentTimeMillis())
+    val todayMood = remember(records, todayKey) { records.firstOrNull { dayKey(it.createdAt) == todayKey && MoodStore.find(it.moodId) != null }?.moodId }
+    val week = remember(todayKey) {
+        val c = Calendar.getInstance().apply { set(Calendar.HOUR_OF_DAY, 12) }
+        c.add(Calendar.DAY_OF_MONTH, -(c.get(Calendar.DAY_OF_WEEK) - Calendar.SUNDAY))
+        List(7) { val k = dayKey(c.timeInMillis); c.add(Calendar.DAY_OF_MONTH, 1); k }
+    }
+    val byDay = remember(records) { records.filter { !it.moodId.isNullOrBlank() }.groupBy { dayKey(it.createdAt) } }
+    val ring: Brush = LocalAccent.current?.brush ?: SolidColor(MaterialTheme.colorScheme.primary)
+    GlassCard(color = MaterialTheme.colorScheme.surface, shape = RoundedCornerShape(22.dp)) {
+        Column(Modifier.fillMaxWidth().padding(vertical = 16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Text("今天感觉怎么样", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, modifier = Modifier.padding(horizontal = 16.dp))
+            if (moods.isNotEmpty()) {
+                Row(
+                    Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 12.dp),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    moods.forEach { m ->
+                        val src = remember(m.id) { MutableInteractionSource() }
+                        Box(
+                            Modifier.size(52.dp)
+                                .pressScale(src, pressed = 0.88f, haptic = true)
+                                .clip(CircleShape)
+                                .then(if (m.id == todayMood) Modifier.border(2.dp, ring, CircleShape) else Modifier)
+                                .clickable(interactionSource = src, indication = null) { onPick(m) },
+                            contentAlignment = Alignment.Center
+                        ) { MoodFace(m, 42.dp) }
+                    }
+                }
+            }
+            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = .5f), modifier = Modifier.padding(horizontal = 16.dp))
+            Text("本周", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold, modifier = Modifier.padding(horizontal = 16.dp))
+            Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp)) {
+                val names = listOf("日", "一", "二", "三", "四", "五", "六")
+                week.forEachIndexed { i, key ->
+                    val isToday = key == todayKey
+                    val m = MoodStore.find(dominantMoodId(byDay[key].orEmpty()))
+                    Column(Modifier.weight(1f), horizontalAlignment = Alignment.CenterHorizontally) {
+                        Text(
+                            names[i],
+                            style = MaterialTheme.typography.labelMedium,
+                            fontWeight = if (isToday) FontWeight.Bold else FontWeight.Normal,
+                            color = if (isToday) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Spacer(Modifier.height(6.dp))
+                        Box(Modifier.size(28.dp), contentAlignment = Alignment.Center) {
+                            if (m != null) MoodFace(m, 28.dp)
+                            else Box(Modifier.size(10.dp).clip(CircleShape).background(MaterialTheme.colorScheme.onSurface.copy(alpha = .12f)))
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/** 发记录页的心情选择：脸 + 名字，选中的放大、带底色，其它变淡。 */
+@Composable
+private fun MoodPickItem(m: Mood, selected: Boolean, dimmed: Boolean, onClick: () -> Unit) {
+    val scale by animateFloatAsState(if (selected) 1.12f else 1f, motion(spring(dampingRatio = .55f, stiffness = 500f)), label = "moodSel")
+    val fade by animateFloatAsState(if (dimmed) .45f else 1f, tween(Motion.SMALL), label = "moodDim")
+    Column(
+        Modifier.width(60.dp).clip(RoundedCornerShape(14.dp)).clickable(onClick = onClick).padding(vertical = 4.dp).graphicsLayer { alpha = fade }
+            .semantics { this.selected = selected; contentDescription = m.name },
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        Box(
+            Modifier.size(50.dp).graphicsLayer { scaleX = scale; scaleY = scale }.clip(CircleShape)
+                .background(if (selected) Color(m.color).copy(alpha = .3f) else Color.Transparent),
+            contentAlignment = Alignment.Center
+        ) { MoodFace(m, 40.dp, describe = false) }
+        Spacer(Modifier.height(4.dp))
+        Text(
+            m.name,
+            style = MaterialTheme.typography.labelMedium,
+            fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
+            color = if (selected) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 1
+        )
+    }
+}
+
+/** 总览里的心情卡：本月最多的心情（大脸 + 次数）、其它心情次数、情绪趋势折线。 */
+@Composable
+private fun MoodMonthCard(moodRecords: List<RecordEntry>, year: Int, month: Int) {
+    val counts = remember(moodRecords) {
+        moodRecords.groupingBy { it.moodId!! }.eachCount().toList().sortedByDescending { it.second }
+            .mapNotNull { (id, n) -> MoodStore.find(id)?.let { it to n } }
+    }
+    if (counts.isEmpty()) return
+    val (top, topCount) = counts.first()
+    GlassCard(color = MaterialTheme.colorScheme.surface, shape = RoundedCornerShape(20.dp)) {
+        Column(Modifier.fillMaxWidth().padding(18.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("心情", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
+                Text("${month + 1}月", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                MoodFace(top, 64.dp)
+                Spacer(Modifier.width(14.dp))
+                Row(verticalAlignment = Alignment.Bottom, modifier = Modifier.weight(1f)) {
+                    Text("$topCount", style = accentTitle(MaterialTheme.typography.displaySmall), fontWeight = FontWeight.Bold)
+                    Text(" 次", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(bottom = 8.dp))
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    counts.drop(1).take(4).forEach { (m, n) ->
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            MoodFace(m, 26.dp)
+                            Text("$n", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                    }
+                }
+            }
+            Text("情绪趋势", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+            MoodTrendChart(moodRecords, year, month)
+        }
+    }
+}
+
+/** 情绪趋势：每天心情愉快度的平均值（-2 低落 … 0 平静 … +2 愉快），平滑折线 + 每天主心情颜色的点。 */
+@Composable
+private fun MoodTrendChart(moodRecords: List<RecordEntry>, year: Int, month: Int) {
+    val days = remember(year, month) { Calendar.getInstance().apply { set(year, month, 1) }.getActualMaximum(Calendar.DAY_OF_MONTH) }
+    val points = remember(moodRecords) {
+        moodRecords.groupBy { dayOf(it.createdAt) }.toSortedMap().mapNotNull { (d, list) ->
+            val ms = list.mapNotNull { MoodStore.find(it.moodId) }
+            if (ms.isEmpty()) null else Triple(d, ms.map { it.valence }.average().toFloat(), Color(MoodStore.find(dominantMoodId(list))?.color ?: ms.first().color))
+        }
+    }
+    val measurer = androidx.compose.ui.text.rememberTextMeasurer()
+    val labelStyle = MaterialTheme.typography.labelSmall.copy(color = MaterialTheme.colorScheme.onSurfaceVariant)
+    val grid = MaterialTheme.colorScheme.onSurface.copy(alpha = .12f)
+    val primary = MaterialTheme.colorScheme.primary
+    val lineBrush: Brush = LocalAccent.current?.horizontal ?: SolidColor(primary)
+    val ringColor = MaterialTheme.colorScheme.surface.copy(alpha = 1f)
+    val tabEnter = LocalTabEnter.current
+    val reveal = remember(tabEnter, year, month) { Animatable(0f) }
+    val revealSpec = motion(tween<Float>(700, easing = Motion.EaseEnter))
+    LaunchedEffect(tabEnter, year, month) { if (tabEnter > 0) reveal.animateTo(1f, revealSpec) }
+    Canvas(Modifier.fillMaxWidth().height(170.dp)) {
+        val left = 36.dp.toPx(); val right = 8.dp.toPx(); val top = 10.dp.toPx(); val bottom = 22.dp.toPx()
+        val w = size.width - left - right
+        val h = size.height - top - bottom
+        fun yOf(v: Float) = top + (2f - v) / 4f * h
+        fun xOf(d: Int) = left + if (days > 1) (d - 1) / (days - 1f) * w else w / 2f
+        listOf(2f to "愉快", 0f to "平静", -2f to "低落").forEach { (v, label) ->
+            drawLine(grid, Offset(left, yOf(v)), Offset(left + w, yOf(v)), strokeWidth = 1.dp.toPx(), pathEffect = PathEffect.dashPathEffect(floatArrayOf(4.dp.toPx(), 4.dp.toPx())))
+            val lay = measurer.measure(label, labelStyle)
+            drawText(lay, topLeft = Offset(0f, yOf(v) - lay.size.height / 2f))
+        }
+        listOf(1, 8, 15, 22, 29).filter { it <= days }.forEach { d ->
+            val lay = measurer.measure("${d}日", labelStyle)
+            drawText(lay, topLeft = Offset(xOf(d) - lay.size.width / 2f, size.height - lay.size.height))
+        }
+        val pts = points.map { (d, v, _) -> Offset(xOf(d), yOf(v)) }
+        clipRect(right = left + w * reveal.value + 8.dp.toPx()) {
+            if (pts.size > 1) {
+                val line = androidx.compose.ui.graphics.Path().apply {
+                    moveTo(pts[0].x, pts[0].y)
+                    for (i in 1 until pts.size) {
+                        val a = pts[i - 1]; val b = pts[i]
+                        val mx = (a.x + b.x) / 2f
+                        cubicTo(mx, a.y, mx, b.y, b.x, b.y)
+                    }
+                }
+                val area = androidx.compose.ui.graphics.Path().apply {
+                    addPath(line)
+                    lineTo(pts.last().x, top + h)
+                    lineTo(pts.first().x, top + h)
+                    close()
+                }
+                drawPath(area, Brush.verticalGradient(listOf(primary.copy(alpha = .22f), primary.copy(alpha = 0f)), startY = top, endY = top + h))
+                drawPath(line, lineBrush, style = Stroke(width = 2.5.dp.toPx(), cap = androidx.compose.ui.graphics.StrokeCap.Round, join = androidx.compose.ui.graphics.StrokeJoin.Round))
+            }
+            pts.forEachIndexed { i, o ->
+                drawCircle(ringColor, 6.dp.toPx(), o)
+                drawCircle(points[i].third, 4.5.dp.toPx(), o)
+            }
+        }
+    }
+}
+
+/** 我的 → 设置 → 管理心情：内置心情开关 + 自定义心情（名字 / 颜色 / 选一张脸）。 */
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun MoodManagePage(modifier: Modifier, header: @Composable () -> Unit) {
+    val ctx = LocalContext.current
+    var editing by remember { mutableStateOf<Mood?>(null) }
+    var editingNew by remember { mutableStateOf(false) }
+    var deleting by remember { mutableStateOf<Mood?>(null) }
+    val custom = MoodStore.custom
+    val hidden = MoodStore.hidden
+    LazyColumn(modifier.fillMaxSize().padding(horizontal = 20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        item { header() }
+        item {
+            GlassCard(color = MaterialTheme.colorScheme.surface, shape = RoundedCornerShape(20.dp)) {
+                Column(Modifier.fillMaxWidth().padding(vertical = 6.dp)) {
+                    MoodStore.BUILT_IN.forEachIndexed { i, m ->
+                        if (i > 0) HorizontalDivider(Modifier.padding(start = 68.dp, end = 16.dp), color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = .5f))
+                        Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+                            MoodFace(m, 38.dp)
+                            Spacer(Modifier.width(14.dp))
+                            Text(m.name, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
+                            AccentSwitch(checked = m.id !in hidden, onCheckedChange = { on -> MoodStore.setHidden(ctx, m.id, !on) })
+                        }
+                    }
+                }
+            }
+        }
+        item { Text("自定义", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 6.dp)) }
+        if (custom.isNotEmpty()) {
+            item {
+                GlassCard(color = MaterialTheme.colorScheme.surface, shape = RoundedCornerShape(20.dp)) {
+                    Column(Modifier.fillMaxWidth().padding(vertical = 6.dp)) {
+                        custom.forEachIndexed { i, m ->
+                            if (i > 0) HorizontalDivider(Modifier.padding(start = 68.dp, end = 16.dp), color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = .5f))
+                            Row(
+                                Modifier.fillMaxWidth().clickable { editingNew = false; editing = m }.padding(start = 16.dp, end = 4.dp, top = 6.dp, bottom = 6.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                MoodFace(m, 38.dp)
+                                Spacer(Modifier.width(14.dp))
+                                Text(m.name, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
+                                IconButton(onClick = { editingNew = false; editing = m }) { Icon(Icons.Default.Edit, contentDescription = "改", tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(20.dp)) }
+                                IconButton(onClick = { deleting = m }) { Icon(Icons.Default.Delete, contentDescription = "删除", tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(20.dp)) }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        item {
+            Button(
+                onClick = {
+                    editingNew = true
+                    editing = Mood("c_${System.currentTimeMillis()}", "", MoodStore.PALETTE[8], FaceStyle.HAPPY, false)
+                },
+                colors = accentButtonColors(),
+                shape = RoundedCornerShape(50),
+                modifier = Modifier.fillMaxWidth().height(50.dp).accentFill(RoundedCornerShape(50))
+            ) {
+                Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(20.dp))
+                Spacer(Modifier.width(6.dp))
+                Text("添加心情", fontWeight = FontWeight.SemiBold)
+            }
+        }
+        item { Spacer(Modifier.height(88.dp)) }
+    }
+    editing?.let { m ->
+        MoodEditDialog(
+            initial = m,
+            isNew = editingNew,
+            onDismiss = { editing = null },
+            onSave = { saved -> MoodStore.upsertCustom(ctx, saved); editing = null }
+        )
+    }
+    deleting?.let { m ->
+        ZhAlertDialog(
+            onDismissRequest = { deleting = null },
+            title = { Text("删掉「${m.name}」？") },
+            confirmButton = { TextButton(onClick = { MoodStore.deleteCustom(ctx, m.id); deleting = null }) { Text("删除", color = MaterialTheme.colorScheme.error) } },
+            dismissButton = { TextButton(onClick = { deleting = null }) { Text("取消") } }
+        )
+    }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun MoodEditDialog(initial: Mood, isNew: Boolean, onDismiss: () -> Unit, onSave: (Mood) -> Unit) {
+    var name by remember { mutableStateOf(initial.name) }
+    var color by remember { mutableStateOf(initial.color) }
+    var face by remember { mutableStateOf(initial.face) }
+    val onSurface = MaterialTheme.colorScheme.onSurface
+    ZhAlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(if (isNew) "添加心情" else "改心情") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
+                Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+                    MoodFaceOf(face, Color(color), 72.dp, description = name.ifBlank { null })
+                }
+                OutlinedTextField(
+                    value = name,
+                    onValueChange = { name = it.replace("\n", "").take(6) },
+                    singleLine = true,
+                    label = { Text("名字") },
+                    modifier = Modifier.fillMaxWidth()
+                )
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    MoodStore.PALETTE.forEach { c ->
+                        val sel = c == color
+                        Box(
+                            Modifier.size(32.dp).clip(CircleShape).background(Color(c))
+                                .then(if (sel) Modifier.border(3.dp, onSurface.copy(alpha = .75f), CircleShape) else Modifier)
+                                .clickable { color = c }
+                                .semantics { selected = sel }
+                        )
+                    }
+                }
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    FaceStyle.values().forEach { st ->
+                        val sel = st == face
+                        Box(
+                            Modifier.size(48.dp).clip(CircleShape)
+                                .background(if (sel) Color(color).copy(alpha = .28f) else Color.Transparent)
+                                .then(if (sel) Modifier.border(2.dp, onSurface.copy(alpha = .6f), CircleShape) else Modifier)
+                                .clickable { face = st }
+                                .semantics { selected = sel },
+                            contentAlignment = Alignment.Center
+                        ) { MoodFaceOf(st, Color(color), 38.dp) }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = { onSave(initial.copy(name = name.trim(), color = color, face = face)) }, enabled = name.isNotBlank()) { Text("保存") }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } }
+    )
 }

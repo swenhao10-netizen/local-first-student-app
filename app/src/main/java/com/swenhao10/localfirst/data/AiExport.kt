@@ -97,15 +97,17 @@ object AiExport {
             if (v > 0) "$v 段视频" else null
         ).takeIf { it.isNotEmpty() }?.joinToString("，", "［", "］") ?: ""
         val text = r.text.replace("\n", " / ").trim()
-        return when (r.kind) {
+        val moodTag = MoodStore.find(r.moodId)?.let { "［心情：${it.name}］" }
+        val body = when (r.kind) {
             "expense" -> {
                 val kind = if (r.moneyKind == "income") "收入" else "支出"
                 listOf("记账：$kind ${r.category?.ifBlank { null } ?: "未分类"} ${money(r.amountCents ?: 0L)}", text.ifBlank { null }, mediaTag.ifBlank { null })
                     .filterNotNull().joinToString(" · ")
             }
             "study" -> "背单词：${text.ifBlank { "背了一些词" }}"
-            else -> listOf(text.ifBlank { null }, mediaTag.ifBlank { null }).filterNotNull().joinToString(" ").ifBlank { "（空记录）" }
+            else -> listOf(text.ifBlank { null }, mediaTag.ifBlank { null }).filterNotNull().joinToString(" ").ifBlank { if (moodTag != null) "" else "（空记录）" }
         }
+        return listOfNotNull(moodTag, body.ifBlank { null }).joinToString(" ")
     }
 
     /** 范围内带媒体的记录，按时间顺序。 */

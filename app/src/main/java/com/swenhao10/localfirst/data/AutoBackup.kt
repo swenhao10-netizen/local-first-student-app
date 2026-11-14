@@ -113,7 +113,7 @@ object AutoBackup {
     /** 数据没变就不备份；force = 手动「立即备份」。返回是否写了新文件。 */
     suspend fun run(c: Context, force: Boolean): Boolean {
         val db = AppDatabase.get(c)
-        val json = DataTransfer.buildJson(db)
+        val json = DataTransfer.buildJson(db, c)
         val records = db.records().all()
         val media = records.flatMap { it.images() }.distinct().map { File(it) }.filter { it.exists() }
         val sig = (json.toString().hashCode().toLong() * 31 + media.sumOf { it.length() }).toString()

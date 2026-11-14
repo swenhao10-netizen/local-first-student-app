@@ -25,7 +25,9 @@ data class RecordEntry(
     val amountCents: Long? = null,
     val category: String? = null,
     val moneyKind: String? = null,
-    val createdAt: Long = System.currentTimeMillis()
+    val createdAt: Long = System.currentTimeMillis(),
+    /** v5 心情：MoodStore 里的心情 id（内置 mood_xxx / 自定义 c_xxx），没选为 null。 */
+    val moodId: String? = null
 )
 
 /** 一条记录的全部图片：多图优先，老的单图字段兜底。 */
@@ -126,12 +128,19 @@ val MIGRATION_3_4 = object : Migration(3, 4) {
     }
 }
 
-@Database(entities = [VocabularyCard::class, HabitEntry::class, ExpenseEntry::class, RecordEntry::class, UnknownWord::class, WordProgress::class, StudyDay::class], version = 4, exportSchema = true)
+/** v5：记录可以带一个心情。只加一列（可空），老数据原样保留。 */
+val MIGRATION_4_5 = object : Migration(4, 5) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL("ALTER TABLE `records` ADD COLUMN `moodId` TEXT")
+    }
+}
+
+@Database(entities = [VocabularyCard::class, HabitEntry::class, ExpenseEntry::class, RecordEntry::class, UnknownWord::class, WordProgress::class, StudyDay::class], version = 5, exportSchema = true)
 abstract class AppDatabase : RoomDatabase() {
     abstract fun cards(): CardDao; abstract fun habits(): HabitDao; abstract fun expenses(): ExpenseDao
     abstract fun records(): RecordDao; abstract fun unknownWords(): UnknownWordDao
     abstract fun wordProgress(): WordProgressDao; abstract fun studyDays(): StudyDayDao
     companion object { @Volatile private var instance: AppDatabase? = null
-        fun get(context: Context): AppDatabase = instance ?: synchronized(this) { instance ?: Room.databaseBuilder(context, AppDatabase::class.java, "student-local.db").addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4).build().also { instance = it } }
+        fun get(context: Context): AppDatabase = instance ?: synchronized(this) { instance ?: Room.databaseBuilder(context, AppDatabase::class.java, "student-local.db").addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5).build().also { instance = it } }
     }
 }

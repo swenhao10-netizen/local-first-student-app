@@ -8,17 +8,18 @@ import java.io.File
 
 object DataTransfer {
     suspend fun export(context: Context, uri: Uri, db: AppDatabase) {
-        val root = buildJson(db)
+        val root = buildJson(db, context)
         context.contentResolver.openOutputStream(uri)?.use { it.write(root.toString(2).toByteArray(Charsets.UTF_8)) } ?: error("无法写入导出文件")
     }
 
     /** 全部数据转成 JSON。图片只写文件名（media_names），配合 zip 备份里的 media/ 目录恢复。 */
-    suspend fun buildJson(db: AppDatabase): JSONObject {
-        val root = JSONObject().put("schema_version", 2).put("exported_at", System.currentTimeMillis())
+    suspend fun buildJson(db: AppDatabase, context: Context): JSONObject {
+        val root = JSONObject().put("schema_version", 3).put("exported_at", System.currentTimeMillis())
         root.put("cards", JSONArray().also { array -> db.cards().all().forEach { array.put(JSONObject().put("front", it.front).put("back", it.back).put("due_at", it.dueAt)) } })
         root.put("habits", JSONArray().also { array -> db.habits().all().forEach { array.put(JSONObject().put("title", it.title).put("done_on", it.doneOn)) } })
         root.put("expenses", JSONArray().also { array -> db.expenses().all().forEach { array.put(JSONObject().put("title", it.title).put("amount_cents", it.amountCents).put("spent_on", it.spentOn)) } })
-        root.put("records", JSONArray().also { array -> db.records().all().forEach { array.put(JSONObject().put("kind", it.kind).put("text", it.text).put("image_path", it.imagePath).put("image_paths", it.imagePaths).put("media_names", JSONArray(it.images().map { p -> File(p).name })).put("amount_cents", it.amountCents).put("category", it.category).put("money_kind", it.moneyKind).put("created_at", it.createdAt)) } })
+        root.put("records", JSONArray().also { array -> db.records().all().forEach { array.put(JSONObject().put("kind", it.kind).put("text", it.text).put("image_path", it.imagePath).put("image_paths", it.imagePaths).put("media_names", JSONArray(it.images().map { p -> File(p).name })).put("amount_cents", it.amountCents).put("category", it.category).put("money_kind", it.moneyKind).put("created_at", it.createdAt).put("mood_id", it.moodId)) } })
+        root.put("moods", MoodStore.toJson(context))
         root.put("unknown_words", JSONArray().also { array -> db.unknownWords().all().forEach { array.put(JSONObject().put("headword", it.headword).put("phonetic", it.phonetic).put("meaning", it.meaning).put("added_at", it.addedAt).put("known_count", it.knownCount)) } })
         root.put("word_progress", JSONArray().also { array -> db.wordProgress().all().forEach { array.put(JSONObject().put("headword", it.headword).put("phonetic", it.phonetic).put("meaning", it.meaning).put("stage", it.stage).put("due_at", it.dueAt).put("wrong_count", it.wrongCount).put("first_seen", it.firstSeen).put("last_seen", it.lastSeen)) } })
         root.put("study_days", JSONArray().also { array -> db.studyDays().all().forEach { array.put(JSONObject().put("day", it.day).put("new_count", it.newCount).put("review_count", it.reviewCount)) } })
@@ -50,6 +51,7 @@ object DataTransfer {
             text = json ?: error("备份里没有 data.json")
         } else text = bytes.toString(Charsets.UTF_8)
         val root = JSONObject(text)
+        MoodStore.mergeJson(context, root.optJSONObject("moods"))
         val cards = root.optJSONArray("cards") ?: JSONArray()
         for (i in 0 until cards.length()) { val item = cards.getJSONObject(i); db.cards().insert(VocabularyCard(front = item.optString("front"), back = item.optString("back"), dueAt = item.optLong("due_at", System.currentTimeMillis()))) }
         val habits = root.optJSONArray("habits") ?: JSONArray()
@@ -89,7 +91,8 @@ object DataTransfer {
                     amountCents = if (item.isNull("amount_cents")) null else item.optLong("amount_cents"),
                     category = item.optString("category").takeIf { it.isNotBlank() && it != "null" },
                     moneyKind = item.optString("money_kind").takeIf { it.isNotBlank() && it != "null" },
-                    createdAt = createdAt
+                    createdAt = createdAt,
+                    moodId = item.optString("mood_id").takeIf { it.isNotBlank() && it != "null" }
                 )
             )
         }
