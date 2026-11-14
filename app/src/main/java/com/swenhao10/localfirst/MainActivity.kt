@@ -5848,14 +5848,27 @@ private fun MoodTodayCard(records: List<RecordEntry>, onPick: (Mood) -> Unit) {
                 ) {
                     moods.forEach { m ->
                         val src = remember(m.id) { MutableInteractionSource() }
-                        Box(
-                            Modifier.size(52.dp)
+                        Column(
+                            Modifier.width(60.dp)
                                 .pressScale(src, pressed = 0.88f, haptic = true)
-                                .clip(CircleShape)
-                                .then(if (m.id == todayMood) Modifier.border(2.dp, ring, CircleShape) else Modifier)
                                 .clickable(interactionSource = src, indication = null) { onPick(m) },
-                            contentAlignment = Alignment.Center
-                        ) { MoodFace(m, 42.dp) }
+                            horizontalAlignment = Alignment.CenterHorizontally
+                        ) {
+                            Box(
+                                Modifier.size(52.dp)
+                                    .clip(CircleShape)
+                                    .then(if (m.id == todayMood) Modifier.border(2.dp, ring, CircleShape) else Modifier),
+                                contentAlignment = Alignment.Center
+                            ) { MoodFace(m, 42.dp) }
+                            Spacer(Modifier.height(4.dp))
+                            Text(
+                                m.name,
+                                style = MaterialTheme.typography.labelMedium,
+                                fontWeight = if (m.id == todayMood) FontWeight.Bold else FontWeight.Normal,
+                                color = if (m.id == todayMood) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 1
+                            )
+                        }
                     }
                 }
             }
