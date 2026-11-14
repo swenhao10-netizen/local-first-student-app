@@ -1,29 +1,48 @@
 package com.swenhao10.localfirst.ui
 
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.StartOffset
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.keyframes
+import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.layout.size
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.State
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.ClipOp
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
+import androidx.compose.ui.graphics.TileMode
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.drawscope.clipPath
+import androidx.compose.ui.graphics.drawscope.rotate
+import androidx.compose.ui.graphics.drawscope.scale
+import androidx.compose.ui.graphics.drawscope.withTransform
 import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.dp
 import com.swenhao10.localfirst.data.FaceStyle
 import com.swenhao10.localfirst.data.Mood
 import kotlin.math.PI
+import kotlin.math.abs
 import kotlin.math.cos
+import kotlin.math.pow
+import kotlin.math.sign
 import kotlin.math.sin
+import kotlin.math.tan
 
-/** 一个心情的专属表情：圆脸 + 每种心情自己的眼睛 / 嘴 / 眉毛 / 小配件，全部用 Canvas 画（矢量，无版权问题）。 */
+/** 一个心情的专属表情：「果冻团子」——超椭圆软身体 + 白色小眼睛 + 每种心情自己的小配件，全部用 Canvas 画。 */
 @Composable
 fun MoodFace(mood: Mood, size: Dp, modifier: Modifier = Modifier, describe: Boolean = true) {
     MoodFaceOf(mood.face, Color(mood.color), size, modifier, if (describe) mood.name else null)
@@ -31,168 +50,301 @@ fun MoodFace(mood: Mood, size: Dp, modifier: Modifier = Modifier, describe: Bool
 
 @Composable
 fun MoodFaceOf(style: FaceStyle, color: Color, size: Dp, modifier: Modifier = Modifier, description: String? = null) {
+    // 待机眨眼：只给 ≥38dp 的大图，列表/日历里的小图保持静态
+    val blink: State<Float>? = if (size >= 38.dp && style.blinks()) {
+        val period = 3000 + (style.ordinal * 370) % 1000
+        val transition = rememberInfiniteTransition(label = "moodBlink")
+        transition.animateFloat(
+            initialValue = 1f,
+            targetValue = 1f,
+            animationSpec = infiniteRepeatable(
+                animation = keyframes {
+                    durationMillis = period
+                    1f at period - 150
+                    0.1f at period - 75
+                    1f at period
+                },
+                repeatMode = RepeatMode.Restart,
+                initialStartOffset = StartOffset((style.ordinal * 530) % 3000)
+            ),
+            label = "moodBlinkEye"
+        )
+    } else null
     Canvas(
         modifier
             .size(size)
             .then(if (description != null) Modifier.semantics { contentDescription = description } else Modifier)
-    ) { drawMoodFace(style, color) }
+    ) { drawMoodFace(style, color, blink?.value ?: 1f) }
 }
 
-private val Ink = Color(0xFF3B2D2A)
-private val Tongue = Color(0xFFFF7D8E)
-private val Drop = Color(0xFF8FD3FF)
+/** 弧线眼（平静、开心）和横线眼（疲惫）不眨。 */
+private fun FaceStyle.blinks(): Boolean = when (this) {
+    FaceStyle.CALM, FaceStyle.HAPPY, FaceStyle.TIRED -> false
+    else -> true
+}
 
-fun DrawScope.drawMoodFace(style: FaceStyle, base: Color) {
+private class JellyShape(val ryf: Float, val p: Float)
+
+private fun FaceStyle.shape(): JellyShape = when (this) {
+    FaceStyle.CALM -> JellyShape(1.00f, 2.3f)
+    FaceStyle.HAPPY -> JellyShape(0.96f, 2.8f)
+    FaceStyle.SAD -> JellyShape(0.90f, 2.3f)
+    FaceStyle.ANXIOUS -> JellyShape(1.02f, 2.3f)
+    FaceStyle.ANGRY -> JellyShape(0.94f, 3.2f)
+    FaceStyle.BORED -> JellyShape(0.82f, 3.0f)
+    FaceStyle.TIRED -> JellyShape(0.74f, 2.6f)
+    FaceStyle.EXCITED -> JellyShape(1.04f, 2.5f)
+}
+
+private val EyeWhite = Color.White
+private val Tear = Color(0xFFE1F2FF)
+private val Sweat = Color(0xFFD7EEFF)
+private val Blush = Color(0xFFFF8C8C).copy(alpha = 0.43f)
+private val ShadowInk = Color(0xFF281E3C)
+
+private fun shade(c: Color, mul: Float, add: Float): Color = Color(
+    red = (c.red * mul + add).coerceIn(0f, 1f),
+    green = (c.green * mul + add).coerceIn(0f, 1f),
+    blue = (c.blue * mul + add).coerceIn(0f, 1f),
+    alpha = 1f
+)
+
+/** 超椭圆 |x/rx|^p + |y/ry|^p = 1 */
+private fun superellipse(cx: Float, cy: Float, rx: Float, ry: Float, p: Float, n: Int = 96): Path {
+    val path = Path()
+    val e = 2f / p
+    for (i in 0 until n) {
+        val t = 2.0 * PI * i / n
+        val c = cos(t).toFloat()
+        val s = sin(t).toFloat()
+        val x = cx + rx * sign(c) * abs(c).pow(e)
+        val y = cy + ry * sign(s) * abs(s).pow(e)
+        if (i == 0) path.moveTo(x, y) else path.lineTo(x, y)
+    }
+    path.close()
+    return path
+}
+
+fun DrawScope.drawMoodFace(style: FaceStyle, base: Color, blink: Float = 1f) {
     val s = size.minDimension
     val ox = (size.width - s) / 2f
     val oy = (size.height - s) / 2f
-    fun p(x: Float, y: Float) = Offset(ox + x * s, oy + y * s)
-    fun sz(w: Float, h: Float) = Size(w * s, h * s)
-    val sw = s * 0.058f
-    val stroke = Stroke(width = sw, cap = StrokeCap.Round, join = StrokeJoin.Round)
-    val thin = Stroke(width = sw * 0.7f, cap = StrokeCap.Round, join = StrokeJoin.Round)
+    val small = s.toDp() < 24.dp
+    val shape = style.shape()
 
-    // 脸：上亮下实的柔和渐变 + 左上一点高光
-    drawCircle(
-        brush = Brush.verticalGradient(listOf(lerp(base, Color.White, 0.35f), base), startY = oy, endY = oy + s),
-        radius = s / 2f,
-        center = p(0.5f, 0.5f)
-    )
-    drawOval(Color.White.copy(alpha = 0.22f), topLeft = p(0.25f, 0.11f), size = sz(0.2f, 0.09f))
+    val r = 0.38f * s
+    val rx = r
+    val ry = r * shape.ryf
+    val cx = ox + 0.5f * s
+    val groundY = oy + 0.9f * s
+    val cy = groundY - ry
+    val ecy = cy - 0.02f * ry
 
-    fun arc(cx: Float, cy: Float, w: Float, h: Float, start: Float, sweep: Float, st: Stroke = stroke, color: Color = Ink) =
-        drawArc(color, start, sweep, useCenter = false, topLeft = p(cx - w / 2, cy - h / 2), size = sz(w, h), style = st)
-    fun fillArc(cx: Float, cy: Float, w: Float, h: Float, start: Float, sweep: Float, color: Color = Ink) =
-        drawArc(color, start, sweep, useCenter = true, topLeft = p(cx - w / 2, cy - h / 2), size = sz(w, h))
-    fun dot(cx: Float, cy: Float, r: Float, color: Color = Ink) = drawCircle(color, r * s, p(cx, cy))
-    fun line(x1: Float, y1: Float, x2: Float, y2: Float, w: Float = sw) = drawLine(Ink, p(x1, y1), p(x2, y2), strokeWidth = w, cap = StrokeCap.Round)
-    fun cheeks(color: Color, alpha: Float) {
-        drawOval(color.copy(alpha = alpha), topLeft = p(0.13f, 0.56f), size = sz(0.17f, 0.09f))
-        drawOval(color.copy(alpha = alpha), topLeft = p(0.70f, 0.56f), size = sz(0.17f, 0.09f))
-    }
-    fun drop(cx: Float, cy: Float, r: Float) {
-        val path = Path().apply {
-            moveTo(ox + cx * s, oy + (cy - r * 2.1f) * s)
-            quadraticTo(ox + (cx + r * 1.05f) * s, oy + (cy - r * 0.6f) * s, ox + (cx + r) * s, oy + cy * s)
-            lineTo(ox + (cx - r) * s, oy + cy * s)
-            quadraticTo(ox + (cx - r * 1.05f) * s, oy + (cy - r * 0.6f) * s, ox + cx * s, oy + (cy - r * 2.1f) * s)
-            close()
+    // 地面阴影：扁椭圆，黑紫色渐隐
+    if (!small) {
+        val shW = 0.9f * r
+        val shH = 0.24f * r
+        withTransform({ scale(1f, shH / shW, pivot = Offset(cx, groundY)) }) {
+            drawCircle(
+                brush = Brush.radialGradient(
+                    0f to ShadowInk.copy(alpha = 0.2f),
+                    0.55f to ShadowInk.copy(alpha = 0.13f),
+                    1f to ShadowInk.copy(alpha = 0f),
+                    center = Offset(cx, groundY),
+                    radius = shW
+                ),
+                radius = shW,
+                center = Offset(cx, groundY)
+            )
         }
-        drawPath(path, Drop)
-        drawCircle(Drop, r * s, p(cx, cy))
-        drawCircle(Color.White.copy(alpha = 0.7f), r * 0.32f * s, p(cx - r * 0.35f, cy - r * 0.2f))
     }
-    fun star(cx: Float, cy: Float, r: Float) {
+
+    // 身体：左上亮、右下暗的线性渐变
+    val body = superellipse(cx, cy, rx, ry, shape.p)
+    val bright = shade(base, 1.12f, 18f / 255f)
+    val dark = shade(base, 0.8f, 0f)
+    val gx = -0.35f / rx
+    val gy = -0.45f / ry
+    val g2 = gx * gx + gy * gy
+    val start = Offset(cx - 0.55f * gx / g2, cy - 0.55f * gy / g2)
+    val end = Offset(cx + 0.45f * gx / g2, cy + 0.45f * gy / g2)
+    drawPath(body, Brush.linearGradient(listOf(dark, bright), start = start, end = end, tileMode = TileMode.Clamp))
+    // 边缘略暗
+    withTransform({ scale(1f, ry / rx, pivot = Offset(cx, cy)) }) {
+        clipPath(superellipse(cx, cy, rx, rx, shape.p)) {
+            drawCircle(
+                brush = Brush.radialGradient(
+                    0f to Color.Black.copy(alpha = 0f),
+                    0.84f to Color.Black.copy(alpha = 0f),
+                    1f to Color.Black.copy(alpha = 0.12f),
+                    center = Offset(cx, cy),
+                    radius = rx
+                ),
+                radius = rx * 1.2f,
+                center = Offset(cx, cy)
+            )
+        }
+    }
+
+    // 左上椭圆高光（径向渐隐代替模糊）
+    if (!small) {
+        val hc = Offset(cx - 0.42f * rx, cy - 0.64f * ry)
+        val hw = 0.2f * rx + 0.1f * r
+        val hh = 0.14f * ry + 0.1f * r
+        withTransform({ scale(1f, hh / hw, pivot = hc) }) {
+            drawCircle(
+                brush = Brush.radialGradient(
+                    0f to Color.White.copy(alpha = 0.35f),
+                    0.5f to Color.White.copy(alpha = 0.24f),
+                    1f to Color.White.copy(alpha = 0f),
+                    center = hc,
+                    radius = hw
+                ),
+                radius = hw,
+                center = hc
+            )
+        }
+    }
+
+    // ---------- 五官 ----------
+    fun pill(px: Float, py: Float, w: Float, h: Float, angle: Float = 0f, color: Color = EyeWhite) {
+        val rr = minOf(w, h) / 2f
+        rotate(angle, pivot = Offset(px, py)) {
+            drawRoundRect(color, topLeft = Offset(px - w / 2f, py - h / 2f), size = Size(w, h), cornerRadius = CornerRadius(rr, rr))
+        }
+    }
+    fun arcEye(ex: Float, ey: Float, w: Float, h: Float, up: Boolean, width: Float) {
         val path = Path()
-        for (i in 0 until 10) {
-            val rr = if (i % 2 == 0) r else r * 0.45f
-            val a = -PI / 2 + i * PI / 5
-            val x = ox + (cx + rr * cos(a).toFloat()) * s
-            val y = oy + (cy + rr * sin(a).toFloat()) * s
+        val n = 32
+        for (i in 0..n) {
+            val t = PI * (0.12 + 0.76 * i / n)
+            val x = ex - (w / 2f) * cos(t).toFloat()
+            val y = if (up) ey - (h / 2f) * sin(t).toFloat() else ey + (h / 2f) * sin(t).toFloat() - h / 2f
             if (i == 0) path.moveTo(x, y) else path.lineTo(x, y)
         }
-        path.close()
-        drawPath(path, Ink)
-        drawPath(path, Ink, style = Stroke(width = sw * 0.5f, join = StrokeJoin.Round))
+        drawPath(path, EyeWhite, style = Stroke(width = width, cap = StrokeCap.Round, join = StrokeJoin.Round))
     }
-    val pink = Color(0xFFFF6F91)
+    fun blushes() {
+        listOf(-1f, 1f).forEach { sd ->
+            val bx = cx + sd * 0.52f * r
+            val by = ecy + 0.24f * r
+            val br = 0.07f * r
+            drawOval(Blush, topLeft = Offset(bx - br * 1.4f, by - br * 0.8f), size = Size(br * 2.8f, br * 1.6f))
+        }
+    }
+    fun drop(dx: Float, dy: Float, top: Float, half: Float, color: Color) {
+        val path = Path().apply {
+            moveTo(dx, dy - top)
+            lineTo(dx - half, dy + 0.15f * half)
+            lineTo(dx + half, dy + 0.15f * half)
+            close()
+        }
+        drawPath(path, color)
+        drawCircle(color, half, Offset(dx, dy + 0.3f * half))
+    }
+    fun sparkle(px: Float, py: Float, k: Float, color: Color) {
+        val path = Path().apply {
+            moveTo(px, py - k)
+            lineTo(px + k * 0.22f, py - k * 0.22f)
+            lineTo(px + k, py)
+            lineTo(px + k * 0.22f, py + k * 0.22f)
+            lineTo(px, py + k)
+            lineTo(px - k * 0.22f, py + k * 0.22f)
+            lineTo(px - k, py)
+            lineTo(px - k * 0.22f, py - k * 0.22f)
+            close()
+        }
+        drawPath(path, color)
+    }
+    fun blinking(block: DrawScope.() -> Unit) {
+        if (blink >= 0.999f) block()
+        else withTransform({ scale(1f, blink, pivot = Offset(cx, ecy)) }) { block() }
+    }
 
     when (style) {
         FaceStyle.CALM -> {
-            // 平静：闭着的放松眼睛 + 一道浅浅的微笑
-            arc(0.33f, 0.43f, 0.15f, 0.1f, 20f, 140f)
-            arc(0.67f, 0.43f, 0.15f, 0.1f, 20f, 140f)
-            arc(0.5f, 0.6f, 0.22f, 0.12f, 25f, 130f)
-            cheeks(pink, 0.22f)
+            listOf(-1f, 1f).forEach { sd -> arcEye(cx + sd * 0.3f * r, ecy + 0.03f * r, 0.3f * r, 0.16f * r, up = false, width = 0.085f * r) }
         }
         FaceStyle.HAPPY -> {
-            // 开心：^ ^ 眯眼 + 张嘴大笑带小舌头 + 红脸蛋
-            arc(0.33f, 0.46f, 0.16f, 0.15f, 200f, 140f)
-            arc(0.67f, 0.46f, 0.16f, 0.15f, 200f, 140f)
-            fillArc(0.5f, 0.6f, 0.34f, 0.3f, 0f, 180f)
-            drawOval(Tongue, topLeft = p(0.42f, 0.66f), size = sz(0.16f, 0.08f))
-            cheeks(pink, 0.4f)
+            listOf(-1f, 1f).forEach { sd -> arcEye(cx + sd * 0.3f * r, ecy + 0.06f * r, 0.3f * r, 0.26f * r, up = true, width = 0.095f * r) }
+            blushes()
         }
         FaceStyle.SAD -> {
-            // 难过：八字眉 + 下垂嘴 + 一滴眼泪
-            line(0.23f, 0.35f, 0.39f, 0.29f)
-            line(0.61f, 0.29f, 0.77f, 0.35f)
-            dot(0.33f, 0.46f, 0.045f)
-            dot(0.67f, 0.46f, 0.045f)
-            arc(0.5f, 0.74f, 0.24f, 0.15f, 205f, 130f)
-            drop(0.3f, 0.64f, 0.045f)
+            blinking {
+                listOf(-1f, 1f).forEach { sd -> pill(cx + sd * 0.28f * r, ecy + 0.06f * r, 0.16f * r, 0.3f * r, angle = -12f * sd) }
+            }
+            drop(cx - 0.33f * r, ecy + 0.36f * r, 0.1f * r, 0.055f * r, Tear)
         }
         FaceStyle.ANXIOUS -> {
-            // 焦虑：瞪圆的小眼睛 + 波浪嘴 + 头上一滴汗
-            listOf(0.33f, 0.67f).forEach { x ->
-                dot(x, 0.45f, 0.085f, Color.White)
-                drawCircle(Ink, 0.085f * s, p(x, 0.45f), style = thin)
-                dot(x, 0.46f, 0.035f)
+            blinking {
+                listOf(-1f, 1f).forEach { sd -> drawCircle(EyeWhite, 0.1f * r, Offset(cx + sd * 0.28f * r, ecy)) }
             }
-            line(0.24f, 0.3f, 0.38f, 0.27f, sw * 0.8f)
-            line(0.62f, 0.27f, 0.76f, 0.3f, sw * 0.8f)
-            val wave = Path()
-            val x0 = 0.33f; val x1 = 0.67f; val y0 = 0.68f; val steps = 32
-            for (i in 0..steps) {
-                val t = i / steps.toFloat()
-                val x = ox + (x0 + (x1 - x0) * t) * s
-                val y = oy + (y0 + 0.032f * sin(t * 2 * 2 * PI).toFloat()) * s
-                if (i == 0) wave.moveTo(x, y) else wave.lineTo(x, y)
-            }
-            drawPath(wave, Ink, style = stroke)
-            drop(0.83f, 0.26f, 0.05f)
+            drop(cx + 0.55f * r, ecy - 0.45f * r, 0.14f * r, 0.07f * r, Sweat)
         }
         FaceStyle.ANGRY -> {
-            // 生气：倒八字眉 + 撇嘴 + 通红的脸蛋 + 头上「井」字
-            line(0.21f, 0.3f, 0.42f, 0.39f, sw * 1.15f)
-            line(0.58f, 0.39f, 0.79f, 0.3f, sw * 1.15f)
-            dot(0.34f, 0.48f, 0.045f)
-            dot(0.66f, 0.48f, 0.045f)
-            arc(0.5f, 0.73f, 0.22f, 0.11f, 205f, 130f)
-            cheeks(Color(0xFFE53935), 0.5f)
-            val red = Color(0xFFE53935)
-            val c = p(0.82f, 0.17f)
-            val r = 0.07f * s
-            listOf(0f, 90f, 180f, 270f).forEach { a ->
-                drawArc(red, a + 20f, 50f, useCenter = false, topLeft = Offset(c.x - r, c.y - r), size = Size(r * 2, r * 2), style = Stroke(sw * 0.7f, cap = StrokeCap.Round))
+            blinking {
+                listOf(-1f, 1f).forEach { sd ->
+                    val ex = cx + sd * 0.28f * r
+                    val w = 0.25f * r
+                    val y0 = ecy - 0.03f * r
+                    val t = tan(Math.toRadians(28.0 * sd)).toFloat()
+                    // 斜切掉眼睛上方：在眼睛自身上做差集裁剪，不用身体色块覆盖
+                    val lid = Path().apply {
+                        moveTo(ex - w, y0 + t * w)
+                        lineTo(ex + w, y0 - t * w)
+                        lineTo(ex + w, y0 - 0.4f * r)
+                        lineTo(ex - w, y0 - 0.4f * r)
+                        close()
+                    }
+                    clipPath(lid, clipOp = ClipOp.Difference) {
+                        pill(ex, ecy + 0.06f * r, 0.18f * r, 0.3f * r)
+                    }
+                }
             }
         }
         FaceStyle.BORED -> {
-            // 烦闷：半耷拉的眼皮 + 眼珠斜向一边 + 一字嘴
-            listOf(0.33f, 0.67f).forEach { x ->
-                dot(x, 0.47f, 0.085f, Color.White)
-                dot(x + 0.035f, 0.49f, 0.04f)
-                fillArc(x, 0.47f, 0.18f, 0.18f, 180f, 180f, lerp(base, Color.Black, 0.12f))
-                line(x - 0.09f, 0.47f, x + 0.09f, 0.47f, sw * 0.8f)
+            blinking {
+                listOf(-1f, 1f).forEach { sd ->
+                    val ex = cx + sd * 0.28f * r + 0.06f * r
+                    val lid = Path().apply {
+                        addRect(androidx.compose.ui.geometry.Rect(ex - 0.14f * r, ecy - 0.2f * r, ex + 0.14f * r, ecy + 0.03f * r))
+                    }
+                    clipPath(lid, clipOp = ClipOp.Difference) {
+                        pill(ex, ecy + 0.06f * r, 0.2f * r, 0.3f * r)
+                    }
+                }
             }
-            line(0.41f, 0.69f, 0.61f, 0.67f)
         }
         FaceStyle.TIRED -> {
-            // 疲惫：眯成一条缝的困眼 + 黑眼圈 + 打哈欠的小 o 嘴 + zzz
-            line(0.25f, 0.46f, 0.41f, 0.46f)
-            line(0.59f, 0.46f, 0.75f, 0.46f)
-            arc(0.33f, 0.52f, 0.14f, 0.07f, 20f, 140f, thin, Ink.copy(alpha = 0.3f))
-            arc(0.67f, 0.52f, 0.14f, 0.07f, 20f, 140f, thin, Ink.copy(alpha = 0.3f))
-            drawOval(Ink, topLeft = p(0.45f, 0.63f), size = sz(0.1f, 0.11f), style = stroke)
-            fun z(x: Float, y: Float, w: Float) {
-                val path = Path().apply {
-                    moveTo(ox + x * s, oy + y * s)
-                    lineTo(ox + (x + w) * s, oy + y * s)
-                    lineTo(ox + x * s, oy + (y + w) * s)
-                    lineTo(ox + (x + w) * s, oy + (y + w) * s)
+            listOf(-1f, 1f).forEach { sd -> pill(cx + sd * 0.28f * r, ecy + 0.1f * r, 0.26f * r, 0.075f * r) }
+            val zc = lerp(base, Color(0xFF5A5A64), 0.4f)
+            val zx = cx + 0.62f * r
+            val zy = ecy - 0.62f * r
+            listOf(Triple(0f, 0f, 0.16f), Triple(0.2f, -0.2f, 0.12f), Triple(0.36f, -0.36f, 0.09f)).forEach { (dx, dy, sz) ->
+                val x0 = zx + dx * r
+                val y0 = zy + dy * r
+                val k = sz * r
+                val z = Path().apply {
+                    moveTo(x0, y0)
+                    lineTo(x0 + k, y0)
+                    lineTo(x0, y0 + k)
+                    lineTo(x0 + k, y0 + k)
                 }
-                drawPath(path, Ink, style = Stroke(sw * 0.65f, cap = StrokeCap.Round, join = StrokeJoin.Round))
+                drawPath(z, zc, style = Stroke(width = 0.035f * r, cap = StrokeCap.Round, join = StrokeJoin.Round))
             }
-            z(0.7f, 0.16f, 0.1f)
-            z(0.84f, 0.04f, 0.07f)
         }
         FaceStyle.EXCITED -> {
-            // 兴奋：星星眼 + 大张嘴 + 红脸蛋
-            star(0.33f, 0.44f, 0.1f)
-            star(0.67f, 0.44f, 0.1f)
-            fillArc(0.5f, 0.58f, 0.38f, 0.38f, 0f, 180f)
-            drawOval(Tongue, topLeft = p(0.41f, 0.68f), size = sz(0.18f, 0.08f))
-            cheeks(pink, 0.4f)
+            blinking {
+                listOf(-1f, 1f).forEach { sd ->
+                    val ex = cx + sd * 0.28f * r
+                    pill(ex, ecy, 0.2f * r, 0.38f * r)
+                    drawCircle(base, 0.035f * r, Offset(ex + 0.02f * r, ecy - 0.075f * r))
+                }
+            }
+            blushes()
+            sparkle(cx - 1.08f * r, ecy - 0.72f * r, 0.13f * r, base)
+            sparkle(cx + 1.05f * r, ecy - 0.5f * r, 0.09f * r, base)
+            sparkle(cx + 0.85f * r, ecy - 0.95f * r, 0.06f * r, base)
         }
     }
 }

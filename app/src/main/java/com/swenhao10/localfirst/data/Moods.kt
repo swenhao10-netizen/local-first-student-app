@@ -39,20 +39,20 @@ object MoodStore {
     private const val KEY_CUSTOM = "custom"
 
     val BUILT_IN: List<Mood> = listOf(
-        Mood("mood_calm", "平静", 0xFF7ED3C6.toInt(), FaceStyle.CALM, true),
-        Mood("mood_happy", "开心", 0xFFFFCB5C.toInt(), FaceStyle.HAPPY, true),
-        Mood("mood_sad", "难过", 0xFF86AEEB.toInt(), FaceStyle.SAD, true),
-        Mood("mood_anxious", "焦虑", 0xFFB9A2EE.toInt(), FaceStyle.ANXIOUS, true),
-        Mood("mood_angry", "生气", 0xFFF4877F.toInt(), FaceStyle.ANGRY, true),
-        Mood("mood_bored", "烦闷", 0xFFAEB9C7.toInt(), FaceStyle.BORED, true),
-        Mood("mood_tired", "疲惫", 0xFFD5B795.toInt(), FaceStyle.TIRED, true),
-        Mood("mood_excited", "兴奋", 0xFFFF9FC6.toInt(), FaceStyle.EXCITED, true)
+        Mood("mood_calm", "平静", 0xFF78C4BA.toInt(), FaceStyle.CALM, true),
+        Mood("mood_happy", "开心", 0xFFFFBE48.toInt(), FaceStyle.HAPPY, true),
+        Mood("mood_sad", "难过", 0xFF7096E8.toInt(), FaceStyle.SAD, true),
+        Mood("mood_anxious", "焦虑", 0xFF8CC878.toInt(), FaceStyle.ANXIOUS, true),
+        Mood("mood_angry", "生气", 0xFFEE625C.toInt(), FaceStyle.ANGRY, true),
+        Mood("mood_bored", "烦闷", 0xFFA896CE.toInt(), FaceStyle.BORED, true),
+        Mood("mood_tired", "疲惫", 0xFFA09C96.toInt(), FaceStyle.TIRED, true),
+        Mood("mood_excited", "兴奋", 0xFFFA80BA.toInt(), FaceStyle.EXCITED, true)
     )
 
     /** 自定义心情可选的颜色（柔和、跟渐变主题搭）。 */
     val PALETTE: List<Int> = listOf(
-        0xFF7ED3C6, 0xFFFFCB5C, 0xFF86AEEB, 0xFFB9A2EE, 0xFFF4877F, 0xFFAEB9C7,
-        0xFFD5B795, 0xFFFF9FC6, 0xFF9BD67E, 0xFFFFA96B, 0xFF6FC3EA, 0xFFE59BE8
+        0xFF78C4BA, 0xFFFFBE48, 0xFF7096E8, 0xFF8CC878, 0xFFEE625C, 0xFFA896CE,
+        0xFFA09C96, 0xFFFA80BA, 0xFF9BD67E, 0xFFFFA96B, 0xFF6FC3EA, 0xFFE59BE8
     ).map { it.toInt() }
 
     var hidden by mutableStateOf<Set<String>>(emptySet())
