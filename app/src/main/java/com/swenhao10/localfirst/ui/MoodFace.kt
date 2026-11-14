@@ -58,7 +58,7 @@ fun DrawScope.drawMoodFace(style: FaceStyle, base: Color) {
         radius = s / 2f,
         center = p(0.5f, 0.5f)
     )
-    drawOval(Color.White.copy(alpha = 0.32f), topLeft = p(0.22f, 0.1f), size = sz(0.26f, 0.13f))
+    drawOval(Color.White.copy(alpha = 0.22f), topLeft = p(0.25f, 0.11f), size = sz(0.2f, 0.09f))
 
     fun arc(cx: Float, cy: Float, w: Float, h: Float, start: Float, sweep: Float, st: Stroke = stroke, color: Color = Ink) =
         drawArc(color, start, sweep, useCenter = false, topLeft = p(cx - w / 2, cy - h / 2), size = sz(w, h), style = st)
@@ -132,11 +132,11 @@ fun DrawScope.drawMoodFace(style: FaceStyle, base: Color) {
             line(0.24f, 0.3f, 0.38f, 0.27f, sw * 0.8f)
             line(0.62f, 0.27f, 0.76f, 0.3f, sw * 0.8f)
             val wave = Path()
-            val x0 = 0.34f; val x1 = 0.66f; val y0 = 0.68f; val steps = 24
+            val x0 = 0.33f; val x1 = 0.67f; val y0 = 0.68f; val steps = 32
             for (i in 0..steps) {
                 val t = i / steps.toFloat()
                 val x = ox + (x0 + (x1 - x0) * t) * s
-                val y = oy + (y0 + 0.028f * sin(t * 3 * 2 * PI).toFloat()) * s
+                val y = oy + (y0 + 0.032f * sin(t * 2 * 2 * PI).toFloat()) * s
                 if (i == 0) wave.moveTo(x, y) else wave.lineTo(x, y)
             }
             drawPath(wave, Ink, style = stroke)
