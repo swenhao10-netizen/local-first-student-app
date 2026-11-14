@@ -6,6 +6,7 @@ import androidx.compose.material.icons.filled.VolumeUp
 import androidx.compose.material3.ListItemDefaults
 import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.foundation.rememberScrollState
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -1056,16 +1057,39 @@ private fun GradientSlider(value: Float, brush: Brush, thumbColor: Color, onChan
         Modifier.fillMaxWidth().height(36.dp)
             .onSizeChanged { widthPx = it.width.toFloat().coerceAtLeast(1f) }
             .pointerInput(Unit) {
+                // 横着拖才算拖滑条；竖着拖让给外面的上下滚动；点一下（没拖）松手时跳到点的位置
                 awaitEachGesture {
                     val down = awaitFirstDown()
-                    pressed = true
-                    haptic.performHapticFeedback(HapticFeedbackType.SegmentTick)
-                    onChange((down.position.x / widthPx).coerceIn(0f, 1f))
-                    do {
+                    val slop = viewConfiguration.touchSlop
+                    var dragging = false
+                    var dx = 0f
+                    var dy = 0f
+                    while (true) {
                         val ev = awaitPointerEvent()
-                        val c = ev.changes.firstOrNull() ?: break
-                        if (c.pressed) { onChange((c.position.x / widthPx).coerceIn(0f, 1f)); c.consume() }
-                    } while (ev.changes.any { it.pressed })
+                        val c = ev.changes.firstOrNull { it.id == down.id } ?: break
+                        if (!c.pressed) {
+                            if (!dragging && !c.isConsumed) {
+                                haptic.performHapticFeedback(HapticFeedbackType.SegmentTick)
+                                onChange((down.position.x / widthPx).coerceIn(0f, 1f))
+                            }
+                            break
+                        }
+                        if (dragging) {
+                            onChange((c.position.x / widthPx).coerceIn(0f, 1f))
+                            c.consume()
+                            continue
+                        }
+                        if (c.isConsumed) break
+                        dx += c.position.x - c.previousPosition.x
+                        dy += c.position.y - c.previousPosition.y
+                        if (kotlin.math.abs(dx) > slop && kotlin.math.abs(dx) >= kotlin.math.abs(dy)) {
+                            dragging = true
+                            pressed = true
+                            haptic.performHapticFeedback(HapticFeedbackType.SegmentTick)
+                            onChange((c.position.x / widthPx).coerceIn(0f, 1f))
+                            c.consume()
+                        } else if (kotlin.math.abs(dy) > slop) break
+                    }
                     pressed = false
                 }
             },
@@ -1089,6 +1113,7 @@ private fun GradientSlider(value: Float, brush: Brush, thumbColor: Color, onChan
 }
 
 /** 自定义主题色面板：上面实时预览，单色 / 渐变切换；渐变时分起点 / 终点各调一个颜色；中间色相/饱和/亮度三条滑条，下面常用色。 */
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun CustomColorSheet(
     initial: Int,
@@ -1136,12 +1161,20 @@ private fun CustomColorSheet(
             ) { Text("用这个颜色") }
             else Button(onClick = { onApply(solidArgb) }, colors = ButtonDefaults.buttonColors(containerColor = p, contentColor = scheme.onPrimary)) { Text("用这个颜色") }
         },
+        scrollText = false,
         text = {
-            Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
+            // 单色/渐变切换固定在标题下面；其余内容在唯一一个上下滚动里（面板外面这层不再套滚动），按钮固定在底部。
+            val maxH = (LocalConfiguration.current.screenHeightDp * 0.6f).dp
+            Column(Modifier.heightIn(max = maxH)) {
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     ChoiceChip("单色", !gradMode) { gradMode = false }
                     ChoiceChip("渐变", gradMode) { gradMode = true }
                 }
+                Spacer(Modifier.height(14.dp))
+            Column(
+                Modifier.weight(1f, fill = false).verticalScroll(rememberScrollState()).padding(bottom = 4.dp),
+                verticalArrangement = Arrangement.spacedBy(14.dp)
+            ) {
                 // 预览：模拟一张卡片 + 主按钮 + 标签
                 Column(
                     Modifier.fillMaxWidth().clip(RoundedCornerShape(22.dp))
@@ -1157,14 +1190,7 @@ private fun CustomColorSheet(
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Box(Modifier.size(34.dp).clip(CircleShape).then(if (acc != null) Modifier.background(acc.brush) else Modifier.background(p)))
                         Spacer(Modifier.width(10.dp))
-                        Column(Modifier.weight(1f)) {
-                            Text("今天", fontWeight = FontWeight.Bold, color = fg)
-                            Text("背了 30 个词 · 记了 3 笔", style = MaterialTheme.typography.labelMedium, color = fg.copy(alpha = .75f))
-                        }
-                        Text(
-                            if (acc != null) String.format("#%06X → #%06X", gA and 0xFFFFFF, gB and 0xFFFFFF) else String.format("#%06X", solidArgb and 0xFFFFFF),
-                            style = MaterialTheme.typography.labelMedium, color = fg
-                        )
+                        Text("今天", fontWeight = FontWeight.Bold, color = fg, style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
                     }
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         if (acc != null) {
@@ -1205,7 +1231,13 @@ private fun CustomColorSheet(
                 Text("明暗", style = MaterialTheme.typography.labelLarge)
                 GradientSlider(value, Brush.horizontalGradient(listOf(Color.Black, Color(android.graphics.Color.HSVToColor(floatArrayOf(hue, sat, 1f))))), Color(argb)) { setHsv(v = it.coerceAtLeast(0.05f)) }
                 Text("常用色", style = MaterialTheme.typography.labelLarge)
-                Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                // 一行 6 个，自动换行，全部显示，不裁切
+                FlowRow(
+                    Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp),
+                    maxItemsInEachRow = 6
+                ) {
                     CUSTOM_PRESETS.forEach { c ->
                         val selected = (c and 0xFFFFFF) == (argb and 0xFFFFFF)
                         // 弹簧会过冲到 0 以下 / 1 以上，padding 和描边不能是负数，夹一下
@@ -1213,7 +1245,7 @@ private fun CustomColorSheet(
                         val ring = ringRaw.coerceIn(0f, 1f)
                         val src = remember { MutableInteractionSource() }
                         Box(
-                            Modifier.size(38.dp).pressScale(src)
+                            Modifier.weight(1f).aspectRatio(1f).pressScale(src)
                                 .border((2.5f * ring).dp, Color.White.copy(alpha = ring), CircleShape)
                                 .padding((4f * ring).dp)
                                 .clip(CircleShape)
@@ -1225,6 +1257,7 @@ private fun CustomColorSheet(
                         )
                     }
                 }
+            }
             }
         }
     )
