@@ -15,130 +15,107 @@ import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.TransformOrigin
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.drawscope.clipPath
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.res.painterResource
-import com.swenhao10.localfirst.R
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.swenhao10.localfirst.R
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
-import kotlin.math.PI
-import kotlin.math.cos
-import kotlin.math.exp
-import kotlin.math.sin
 
 /**
- * 知行启动动画 v5（小猫落地 + 招手，约 3.2 秒，点一下跳过）
- * 1. 浅青圆底弹出来
- * 2. 小猫从屏幕上方掉下来，落地时压扁再弹回（Q 弹），影子跟着变大
- * 3. 落地瞬间蹦出说/图/账/词四色小点，身体不动，只有举起的那只爪子招两下手
- * 4. 下方出现「知行」和 slogan
- * 小芽是图片自带的，不再单独做动画。
- *
- * 资源：zhixing_cat_body.png（身体，去掉了举起的手）和 zhixing_cat_arm.png（只有手），
- * 两张都是 720×938 透明底、画布完全对齐，放到 res/drawable-nodpi/。手绕肩膀 (21%, 58%) 转。
- * 窗口背景设为 #FFF9F4，避免启动白闪。
+ * 知行启动动画 v6（新图标 Q 弹出现 + 眨眼，约 2.4 秒，点一下跳过）
+ * 1. 图标从小 Q 弹放大，落定时压扁再回弹
+ * 2. 小猫眨两下眼（在眼睛上画同色眼皮）
+ * 3. 下方浮出「知行」和 slogan
+ * 资源：zhixing_icon_tile.png（720×720，圆角透明）。眼睛中心按 1024 原图换算。
  */
 private val BG = Color(0xFFFFF9F4)
 private val TEAL = Color(0xFF0B6B68)
-private val DISC = Color(0xFFDEF0EC)
-private val TYPE_COLORS = listOf(Color(0xFF0B6B68), Color(0xFF5A78D2), Color(0xFFDE8C28), Color(0xFF965AC8))
+private val LID = Color(0xFFF9E4F3)
+private val LASH = Color(0xFF0E7F7E)
+private val EYES = listOf(Offset(370f / 1024f, 565f / 1024f), Offset(668f / 1024f, 565f / 1024f))
+private const val EYE_R = 106f / 1024f
 
 @Composable
 fun LaunchAnimation(onFinished: () -> Unit) {
-    val disc = remember { Animatable(0f) }
-    val fall = remember { Animatable(0f) }
-    val land = remember { Animatable(0f) }
-    val wave = remember { Animatable(0f) }
-    val burst = remember { Animatable(0f) }
+    val pop = remember { Animatable(0f) }
+    val squish = remember { Animatable(0f) }
+    val blink = remember { Animatable(0f) }
     val word = remember { Animatable(0f) }
     var done by remember { mutableStateOf(false) }
     val finish = { if (!done) { done = true; onFinished() } }
 
     LaunchedEffect(Unit) {
-        launch { disc.animateTo(1f, spring(dampingRatio = 0.6f, stiffness = 300f)) }
-        delay(350)
-        fall.animateTo(1f, tween(500, easing = CubicBezierEasing(0.55f, 0f, 1f, 0.45f))) // 加速下落
-        launch { land.animateTo(1f, tween(500, easing = LinearEasing)) }
-        launch { burst.animateTo(1f, tween(750, easing = LinearOutSlowInEasing)) }
-        delay(450)
+        launch { pop.animateTo(1f, spring(dampingRatio = 0.48f, stiffness = 260f)) }
+        delay(260)
         launch {
-            wave.animateTo(1f, keyframes {
-                durationMillis = 900
-                0f at 0; 14f at 200 using FastOutSlowInEasing; 3f at 400 using FastOutSlowInEasing
-                13f at 630 using FastOutSlowInEasing; 0f at 900 using FastOutSlowInEasing
-            })
+            squish.animateTo(1f, tween(140, easing = FastOutSlowInEasing))
+            squish.animateTo(0f, spring(dampingRatio = 0.35f, stiffness = 500f))
         }
-        delay(450)
-        word.animateTo(1f, tween(550, easing = LinearOutSlowInEasing))
-        delay(450)
+        delay(420)
+        launch { word.animateTo(1f, tween(500, easing = LinearOutSlowInEasing)) }
+        repeat(2) {
+            blink.animateTo(1f, tween(90, easing = FastOutLinearInEasing))
+            blink.animateTo(0f, tween(130, easing = LinearOutSlowInEasing))
+            delay(140)
+        }
+        delay(650)
         finish()
     }
 
-    val catW = 240.dp
-    val catH = 312.dp
+    val d = 168.dp
     Box(
         Modifier.fillMaxSize().background(BG)
             .clickable(interactionSource = remember { MutableInteractionSource() }, indication = null) { finish() },
         contentAlignment = Alignment.Center
     ) {
-        Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.offset(y = (-20).dp)) {
-            Box(Modifier.size(catW, catH)) {
-                // 圆底 + 影子
-                Canvas(Modifier.matchParentSize()) {
-                    val u = 1.dp.toPx()
-                    val r = 150 * u * disc.value
-                    if (r > 0f) drawCircle(DISC, r, Offset(size.width / 2, size.height / 2 + 10 * u))
-                    val f = fall.value
-                    if (f > 0f) {
-                        val k = ((f - 0.4f) / 0.6f).coerceIn(0f, 1f)
-                        val sw = size.width * 0.40f * (0.4f + 0.6f * k)
-                        drawOval(TEAL.copy(alpha = 0.16f * k), Offset(size.width / 2 - sw, size.height - 7 * u), Size(sw * 2, 14 * u))
-                    }
+        Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.offset(y = (-24).dp)) {
+            Box(
+                Modifier.size(d).graphicsLayer {
+                    val p = pop.value
+                    val s = squish.value
+                    alpha = (p * 3f).coerceIn(0f, 1f)
+                    scaleX = (0.2f + 0.8f * p) * (1f + 0.08f * s)
+                    scaleY = (0.2f + 0.8f * p) * (1f - 0.10f * s)
+                    transformOrigin = TransformOrigin(0.5f, 0.85f)
                 }
-                // 小猫：身体 + 手两层，一起落地、一起压扁；招手只转手
-                val p = land.value
-                val s = if (p > 0f) (sin(p * PI * 2.2) * exp(-p * 3.2)).toFloat() else 0f
-                Box(
-                    Modifier.matchParentSize().graphicsLayer {
-                        val f = fall.value
-                        alpha = if (f > 0f) 1f else 0f
-                        translationY = -(1f - f) * size.height * 1.6f
-                        scaleX = 1f + 0.10f * s
-                        scaleY = 1f - 0.12f * s
-                        transformOrigin = TransformOrigin(0.5f, 1f)
-                    }
-                ) {
-                    Image(painterResource(R.drawable.zhixing_cat_body), null, Modifier.matchParentSize())
-                    Image(
-                        painterResource(R.drawable.zhixing_cat_arm), null,
-                        Modifier.matchParentSize().graphicsLayer {
-                            rotationZ = wave.value          // 正数 = 顺时针，手往脸这边摆
-                            transformOrigin = TransformOrigin(0.2102f, 0.5807f)
-                        }
-                    )
-                }
-                // 四色小点
+            ) {
+                Image(painterResource(R.drawable.zhixing_icon_tile), null, Modifier.matchParentSize())
                 Canvas(Modifier.matchParentSize()) {
-                    val b = burst.value
-                    if (b in 0.001f..0.999f) {
-                        val angles = listOf(-160.0, -20.0, -130.0, -50.0)
-                        TYPE_COLORS.forEachIndexed { i, c ->
-                            val rad = Math.toRadians(angles[i])
-                            val r = size.width * (0.3f + 0.45f * (1 - (1 - b) * (1 - b) * (1 - b)))
-                            val x = size.width / 2 + (cos(rad) * r).toFloat()
-                            val y = size.height - 20.dp.toPx() + (sin(rad) * r * 0.9).toFloat()
-                            drawCircle(c.copy(alpha = 1f - b * b * b), 7.dp.toPx() * sin(b * PI).toFloat(), Offset(x, y))
+                    val b = blink.value
+                    if (b > 0.01f) {
+                        val r = size.width * EYE_R
+                        EYES.forEach { e ->
+                            val c = Offset(e.x * size.width, e.y * size.height)
+                            val circle = Path().apply { addOval(androidx.compose.ui.geometry.Rect(c, r)) }
+                            val h = 2 * r * b
+                            clipPath(circle) {
+                                drawRect(LID, Offset(c.x - r, c.y - r), Size(2 * r, h))
+                            }
+                            if (b > 0.6f) {
+                                val y = c.y + r * 0.1f
+                                drawArc(
+                                    LASH, 20f, 140f, false,
+                                    Offset(c.x - r * 0.7f, y - r * 0.35f), Size(r * 1.4f, r * 0.5f),
+                                    style = Stroke(width = r * 0.14f, cap = StrokeCap.Round),
+                                    alpha = (b - 0.6f) / 0.4f
+                                )
+                            }
                         }
                     }
                 }
             }
-            Spacer(Modifier.height(40.dp))
+            Spacer(Modifier.height(36.dp))
             Column(
                 horizontalAlignment = Alignment.CenterHorizontally,
-                modifier = Modifier.alpha(word.value).offset(y = ((1 - word.value) * 16).dp)
+                modifier = Modifier.alpha(word.value).offset(y = ((1 - word.value) * 14).dp)
             ) {
                 Text("知行", color = TEAL, fontSize = 30.sp, fontWeight = FontWeight.ExtraBold)
                 Spacer(Modifier.height(8.dp))
