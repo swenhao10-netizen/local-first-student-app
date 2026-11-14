@@ -67,6 +67,7 @@ fun LiquidBottomTabs(
     modifier: Modifier = Modifier,
     accentColor: Color = Color(0xFF0088FF),
     accentBrush: Brush? = null,
+    accentColors: List<Color>? = null,
     isLightTheme: Boolean = !isSystemInDarkTheme(),
     content: @Composable RowScope.() -> Unit
 ) {
@@ -231,7 +232,19 @@ fun LiquidBottomTabs(
                             .graphicsLayer(compositingStrategy = androidx.compose.ui.graphics.CompositingStrategy.Offscreen)
                             .drawWithContent {
                                 drawContent()
-                                drawRect(accentBrush, blendMode = BlendMode.SrcIn)
+                                if (accentColors != null && tabsCount > 0) {
+                                    // 每个 Tab 自己从头到尾一段渐变（整条一段的话，最右边的 Tab 只剩尾色）
+                                    val slot = size.width / tabsCount
+                                    for (i in 0 until tabsCount) {
+                                        val x0 = slot * i
+                                        drawRect(
+                                            Brush.linearGradient(accentColors, start = Offset(x0, 0f), end = Offset(x0 + slot, size.height)),
+                                            topLeft = Offset(x0, 0f),
+                                            size = androidx.compose.ui.geometry.Size(slot, size.height),
+                                            blendMode = BlendMode.SrcIn
+                                        )
+                                    }
+                                } else drawRect(accentBrush, blendMode = BlendMode.SrcIn)
                             }
                     ),
                 verticalAlignment = Alignment.CenterVertically,

@@ -39,6 +39,15 @@ import androidx.compose.ui.window.Popup
 import androidx.compose.ui.window.PopupPositionProvider
 import androidx.compose.ui.window.PopupProperties
 import kotlinx.coroutines.delay
+import androidx.compose.runtime.staticCompositionLocalOf
+import androidx.compose.ui.draw.drawWithContent
+import androidx.compose.ui.graphics.BlendMode
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.CompositingStrategy
+import androidx.compose.ui.graphics.graphicsLayer
+
+/** 渐变主题的强调渐变；null = 单色主题，「!」用 onSurfaceVariant。由 MainActivity 提供。 */
+val LocalInfoTipBrush = staticCompositionLocalOf<Brush?> { null }
 
 /**
  * 标题后面的小「!」：长按（或点一下）弹出一个说明气泡，点别处或 6 秒后收起。
@@ -69,7 +78,12 @@ fun InfoTip(text: String, modifier: Modifier = Modifier) {
             Icons.Outlined.Info,
             contentDescription = null,
             tint = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.size(18.dp),
+            modifier = Modifier.size(18.dp).then(
+                LocalInfoTipBrush.current?.let { b ->
+                    Modifier.graphicsLayer(compositingStrategy = CompositingStrategy.Offscreen)
+                        .drawWithContent { drawContent(); drawRect(b, blendMode = BlendMode.SrcIn) }
+                } ?: Modifier
+            ),
         )
         if (shown.currentState || shown.targetState) {
             LaunchedEffect(shown.targetState) {

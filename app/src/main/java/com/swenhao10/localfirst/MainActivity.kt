@@ -162,7 +162,6 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.darkColorScheme
@@ -394,7 +393,7 @@ private fun TipPill(text: String, actionLabel: String? = null, onAction: () -> U
                 .padding(horizontal = 16.dp, vertical = 10.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Box(Modifier.size(8.dp).clip(CircleShape).background(MaterialTheme.colorScheme.primary))
+            Box(Modifier.size(8.dp).clip(CircleShape).accentBackground(MaterialTheme.colorScheme.primary))
             Spacer(Modifier.width(10.dp))
             Text(
                 text,
@@ -405,7 +404,7 @@ private fun TipPill(text: String, actionLabel: String? = null, onAction: () -> U
             )
             if (actionLabel != null) {
                 Spacer(Modifier.width(4.dp))
-                TextButton(onClick = onAction) {
+                TextButton(onClick = onAction, accent = LocalBackdrop.current != null) {
                     Text(
                         actionLabel,
                         fontWeight = FontWeight.Bold,
@@ -992,6 +991,51 @@ private fun Modifier.brushTint(brush: Brush?): Modifier =
     else this.graphicsLayer(compositingStrategy = androidx.compose.ui.graphics.CompositingStrategy.Offscreen)
         .drawWithContent { drawContent(); drawRect(brush, blendMode = androidx.compose.ui.graphics.BlendMode.SrcIn) }
 
+/** 图标、强调色文字：渐变主题下染成渐变（白天用压深的 a/b），单色主题原样。horizontal = 文字用水平渐变。 */
+@Composable
+private fun Modifier.accentTint(enabled: Boolean = true, horizontal: Boolean = false): Modifier {
+    val acc = LocalAccent.current
+    return if (!enabled || acc == null) this else brushTint(if (horizontal) acc.horizontal else acc.brush)
+}
+
+/** 列表右侧箭头 >：渐变主题下画淡化的渐变，单色主题用 onSurfaceVariant。配合 Modifier.accentTint() 用。 */
+@Composable
+private fun chevronTint(): Color =
+    if (LocalAccent.current != null) Color.Black.copy(alpha = .55f) else MaterialTheme.colorScheme.onSurfaceVariant
+
+/** 实心块背景：渐变主题铺 fill 渐变，单色主题用 color。 */
+@Composable
+private fun Modifier.accentBackground(color: Color, shape: androidx.compose.ui.graphics.Shape = androidx.compose.ui.graphics.RectangleShape): Modifier {
+    val acc = LocalAccent.current
+    return if (acc == null) this.background(color, shape) else this.background(acc.fill, shape)
+}
+
+/** 按钮里的内容（文字按钮、描边按钮）：渐变主题下整体染成水平渐变。 */
+@Composable
+private fun AccentRow(content: @Composable androidx.compose.foundation.layout.RowScope.() -> Unit) {
+    val acc = LocalAccent.current
+    if (acc == null) Row(verticalAlignment = Alignment.CenterVertically, content = content)
+    else Row(Modifier.brushTint(acc.horizontal), verticalAlignment = Alignment.CenterVertically, content = content)
+}
+
+/**
+ * 全 App 的文字按钮：渐变主题下文字/图标是渐变。accent = false 留给自己指定了颜色（取消、删除、反色背景上）的按钮。
+ * 本文件不再 import material3.TextButton，所有 TextButton 都走这里。
+ */
+@Composable
+private fun TextButton(
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    enabled: Boolean = true,
+    contentPadding: androidx.compose.foundation.layout.PaddingValues = ButtonDefaults.TextButtonContentPadding,
+    accent: Boolean = true,
+    content: @Composable androidx.compose.foundation.layout.RowScope.() -> Unit
+) {
+    androidx.compose.material3.TextButton(onClick = onClick, modifier = modifier, enabled = enabled, contentPadding = contentPadding) {
+        if (accent && LocalAccent.current != null) AccentRow(content) else content()
+    }
+}
+
 /** 进度条：单色主题原样用 LinearProgressIndicator，渐变主题画一条渐变。 */
 @Composable
 private fun AccentProgress(
@@ -1402,6 +1446,7 @@ private fun GlassBottomBar(selected: Tab, onSelect: (Tab) -> Unit, onAdd: () -> 
             modifier = Modifier.weight(1f),
             accentColor = MaterialTheme.colorScheme.primary,
             accentBrush = LocalAccent.current?.horizontal,
+            accentColors = LocalAccent.current?.let { listOf(it.a, it.b) },
             isLightTheme = !dark
         ) {
             tabs.forEach { item ->
@@ -1451,7 +1496,7 @@ private fun GlassButton(
     } else if (tint != null) {
         Button(onClick = onClick, enabled = enabled, modifier = modifier, shape = RoundedCornerShape(50), colors = ButtonDefaults.buttonColors(containerColor = tint)) { content() }
     } else {
-        OutlinedButton(onClick = onClick, enabled = enabled, modifier = modifier, shape = RoundedCornerShape(50)) { content() }
+        OutlinedButton(onClick = onClick, enabled = enabled, modifier = modifier, shape = RoundedCornerShape(50)) { AccentRow(content) }
     }
 }
 
@@ -1545,7 +1590,8 @@ private fun animateColorScheme(target: androidx.compose.material3.ColorScheme, d
 private fun RoundDoneCard(count: Int, modifier: Modifier = Modifier) {
     val reduce = LocalReduceMotion.current
     val primary = MaterialTheme.colorScheme.primary
-    val onPrimary = MaterialTheme.colorScheme.onPrimary
+    val doneAcc = LocalAccent.current
+    val onPrimary = doneAcc?.onFill ?: MaterialTheme.colorScheme.onPrimary
     val check = remember { Animatable(0f) }
     LaunchedEffect(Unit) {
         if (reduce) check.snapTo(1f) else { delay(80); check.animateTo(1f, tween(320, easing = Motion.EaseOut)) }
@@ -1559,7 +1605,7 @@ private fun RoundDoneCard(count: Int, modifier: Modifier = Modifier) {
         verticalAlignment = Alignment.CenterVertically
     ) {
         Canvas(Modifier.size(32.dp)) {
-            drawCircle(primary)
+            if (doneAcc != null) drawCircle(doneAcc.fill) else drawCircle(primary)
             val path = androidx.compose.ui.graphics.Path().apply {
                 moveTo(size.width * 0.28f, size.height * 0.52f)
                 lineTo(size.width * 0.44f, size.height * 0.67f)
@@ -1743,7 +1789,8 @@ private fun LocalFirstApp(db: AppDatabase, launchDone: Boolean = true) {
             LocalGlass provides glassOn,
             LocalBackdrop provides (if (glassOn) layerBackdrop else null),
             LocalBgPath provides bgPath,
-            LocalAccent provides accent
+            LocalAccent provides accent,
+            com.swenhao10.localfirst.ui.LocalInfoTipBrush provides accent?.brush
         ) {
         Box(Modifier.fillMaxSize()) {
         if (glassOn) GlassBackground(useDarkTheme, Modifier.layerBackdrop(layerBackdrop))
@@ -2147,11 +2194,11 @@ private fun RecordScreen(
                     },
                     enabled = pickState.selectedDateMillis != null,
                     shape = RoundedCornerShape(50),
-                    colors = ButtonDefaults.buttonColors(containerColor = primary, contentColor = onPrimary),
-                    modifier = Modifier.padding(end = 10.dp)
+                    colors = if (LocalAccent.current != null) accentButtonColors() else ButtonDefaults.buttonColors(containerColor = primary, contentColor = onPrimary),
+                    modifier = Modifier.padding(end = 10.dp).then(if (pickState.selectedDateMillis != null) Modifier.accentFill(RoundedCornerShape(50)) else Modifier)
                 ) { Text("跳过去", fontWeight = FontWeight.SemiBold) }
             },
-            dismissButton = { TextButton(onClick = { showDatePick = false }) { Text("取消", color = fg.copy(alpha = .8f)) } }
+            dismissButton = { TextButton(onClick = { showDatePick = false }, accent = false) { Text("取消", color = fg.copy(alpha = .8f)) } }
         ) {
             androidx.compose.material3.DatePicker(
                 state = pickState,
@@ -2195,9 +2242,9 @@ private fun RecordScreen(
                 ) { Icon(Icons.Default.CalendarMonth, contentDescription = "跳到日期", tint = MaterialTheme.colorScheme.onSurface) }
                 if (!LocalGlass.current) {
                     Spacer(Modifier.width(10.dp))
-                    Surface(onClick = onAddRecord, shape = CircleShape, color = MaterialTheme.colorScheme.primary, modifier = Modifier.size(46.dp)) {
+                    Surface(onClick = onAddRecord, shape = CircleShape, color = if (LocalAccent.current != null) Color.Transparent else MaterialTheme.colorScheme.primary, modifier = Modifier.size(46.dp).accentFill(CircleShape)) {
                         Box(contentAlignment = Alignment.Center) {
-                            Icon(Icons.Default.Add, contentDescription = "发记录", tint = MaterialTheme.colorScheme.onPrimary, modifier = Modifier.size(24.dp))
+                            Icon(Icons.Default.Add, contentDescription = "发记录", tint = onAccentFill(), modifier = Modifier.size(24.dp))
                         }
                     }
                 }
@@ -2755,10 +2802,10 @@ private fun ExpenseLine(record: RecordEntry, onImageClick: (Int) -> Unit = {}) {
             ) {
                 val cat = record.category?.takeIf { it.isNotBlank() } ?: if (isIncome) "收入" else "其他"
                 Surface(color = amountColor.copy(alpha = 0.18f), shape = RoundedCornerShape(50)) {
-                    Text(cat, style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.SemiBold, color = amountColor, modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp))
+                    Text(cat, style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.SemiBold, color = amountColor, modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp).accentTint(isIncome, horizontal = true))
                 }
                 Spacer(Modifier.weight(1f))
-                Text(amountText, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold, color = amountColor)
+                Text(amountText, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold, color = amountColor, modifier = Modifier.accentTint(isIncome, horizontal = true))
             }
         }
         return
@@ -2775,7 +2822,7 @@ private fun ExpenseLine(record: RecordEntry, onImageClick: (Int) -> Unit = {}) {
             modifier = Modifier.weight(1f)
         )
         Spacer(Modifier.width(10.dp))
-        Text(amountText, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold, color = amountColor)
+        Text(amountText, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold, color = amountColor, modifier = Modifier.accentTint(isIncome, horizontal = true))
     }
 }
 
@@ -2849,7 +2896,7 @@ private fun RecordItemCard(record: RecordEntry, onDelete: () -> Unit, showDate: 
             RecordImages(record.images())
             if (record.kind == "expense" && record.amountCents != null) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(Icons.Default.AccountBalanceWallet, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(18.dp))
+                    Icon(Icons.Default.AccountBalanceWallet, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(18.dp).accentTint())
                     Spacer(Modifier.width(6.dp))
                     Text(record.category ?: "", color = MaterialTheme.colorScheme.onSurfaceVariant)
                     Spacer(Modifier.weight(1f))
@@ -2857,7 +2904,8 @@ private fun RecordItemCard(record: RecordEntry, onDelete: () -> Unit, showDate: 
                     Text(
                         (if (isIncome) "+" else "-") + formatMoney(record.amountCents),
                         fontWeight = FontWeight.Bold,
-                        color = if (isIncome) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.secondary
+                        color = if (isIncome) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.secondary,
+                        modifier = Modifier.accentTint(isIncome, horizontal = true)
                     )
                 }
             }
@@ -2972,7 +3020,7 @@ private fun AddRecordScreen(
             title = { Text(if (editing == null) "不发了？" else "不保存修改？") },
             text = { Text(if (editing == null) "刚写的内容和选的图会丢掉。" else "这次的修改会丢掉，原来的记录不变。") },
             confirmButton = {
-                TextButton(onClick = { showDiscard = false; onCancel() }) { Text("丢掉", color = MaterialTheme.colorScheme.error) }
+                TextButton(onClick = { showDiscard = false; onCancel() }, accent = false) { Text("丢掉", color = MaterialTheme.colorScheme.error) }
             },
             dismissButton = { TextButton(onClick = { showDiscard = false }) { Text("继续写") } }
         )
@@ -2991,7 +3039,7 @@ private fun AddRecordScreen(
         Column(Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding()) {
             // 顶栏：取消 / 标题 / 主色胶囊发布
             Box(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp)) {
-                TextButton(onClick = requestClose, modifier = Modifier.align(Alignment.CenterStart)) {
+                TextButton(onClick = requestClose, modifier = Modifier.align(Alignment.CenterStart), accent = false) {
                     Text("取消", color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
                 Text(
@@ -3049,7 +3097,7 @@ private fun AddRecordScreen(
                             value = text,
                             onValueChange = { text = it.take(500) },
                             textStyle = MaterialTheme.typography.bodyLarge.copy(color = MaterialTheme.colorScheme.onSurface, lineHeight = 26.sp),
-                            cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
+                            cursorBrush = LocalAccent.current?.brush ?: SolidColor(MaterialTheme.colorScheme.primary),
                             modifier = Modifier.fillMaxWidth().heightIn(min = 96.dp),
                             decorationBox = { inner ->
                                 if (text.isEmpty()) {
@@ -3200,8 +3248,8 @@ private fun AddRecordScreen(
                                     textStyle = MaterialTheme.typography.headlineMedium.copy(
                                         fontWeight = FontWeight.Bold,
                                         color = if (moneyKind == "expense") MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.primary
-                                    ),
-                                    cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
+                                    ).merge(LocalAccent.current?.takeIf { moneyKind != "expense" }?.let { androidx.compose.ui.text.TextStyle(brush = it.horizontal) }),
+                                    cursorBrush = LocalAccent.current?.brush ?: SolidColor(MaterialTheme.colorScheme.primary),
                                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
                                     modifier = Modifier.weight(1f),
                                     decorationBox = { inner ->
@@ -3218,8 +3266,8 @@ private fun AddRecordScreen(
                                 verticalArrangement = Arrangement.spacedBy(8.dp)
                             ) {
                                 val fill = if (moneyKind == "expense") MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.primary
-                                val gradSel = moneyKind != "expense" && LocalAccent.current != null
-                                val onFill = if (moneyKind == "expense") MaterialTheme.colorScheme.onSecondary else onAccentFill()
+                                val gradSel = LocalAccent.current != null
+                                val onFill = if (gradSel || moneyKind != "expense") onAccentFill() else MaterialTheme.colorScheme.onSecondary
                                 categories.forEach { c ->
                                     val sel = category == c
                                     val catSrc = remember { MutableInteractionSource() }
@@ -3612,7 +3660,7 @@ private fun WordsScreen(
                                     Text("/${w.phonetic}/", style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
                                 }
                                 IconButton(onClick = { speak(w.headword) }) {
-                                    Icon(Icons.Default.VolumeUp, contentDescription = "发音", tint = MaterialTheme.colorScheme.primary)
+                                    Icon(Icons.Default.VolumeUp, contentDescription = "发音", tint = MaterialTheme.colorScheme.primary, modifier = Modifier.accentTint())
                                 }
                             }
                         }
@@ -3734,7 +3782,7 @@ private fun WordsScreen(
                     Text("生词本", style = accentTitle(MaterialTheme.typography.headlineSmall), fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
                     if (unknownWords.isNotEmpty()) {
                         Surface(color = MaterialTheme.colorScheme.primary.copy(alpha = .14f), shape = RoundedCornerShape(50)) {
-                            Text("${unknownWords.size}", color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold, modifier = Modifier.padding(horizontal = 10.dp, vertical = 3.dp))
+                            Text("${unknownWords.size}", color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold, modifier = Modifier.padding(horizontal = 10.dp, vertical = 3.dp).accentTint(horizontal = true))
                         }
                         Spacer(Modifier.width(8.dp))
                     }
@@ -3781,7 +3829,7 @@ private fun WordsScreen(
                                 modifier = Modifier.pressScale(pillSrc)
                             ) {
                                 AnimatedContent(expanded, transitionSpec = { fadeIn(tween(Motion.SMALL)) togetherWith fadeOut(tween(90)) using SizeTransform(clip = false) }, label = "pill") { ex ->
-                                    Text(if (ex) "收起" else "看意思", color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelLarge, modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp))
+                                    Text(if (ex) "收起" else "看意思", color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelLarge, modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp).accentTint(horizontal = true))
                                 }
                             }
                         }
@@ -3863,7 +3911,7 @@ private fun WordsScreen(
                             contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 14.dp)
                         ) { Text("换词书") }
                         if (study.index > 0) {
-                            TextButton(onClick = { startSession(resume = false) }) { Text("从头开始", color = onC) }
+                            TextButton(onClick = { startSession(resume = false) }, accent = false) { Text("从头开始", color = onC) }
                         }
                     }
                 }
@@ -3887,17 +3935,17 @@ private fun WordsScreen(
             GlassCard(color = MaterialTheme.colorScheme.surface, shape = RoundedCornerShape(20.dp), onClick = { showUnknownBook = true }) {
                 Row(Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 16.dp), verticalAlignment = Alignment.CenterVertically) {
                     Box(Modifier.size(42.dp).clip(RoundedCornerShape(14.dp)).background(MaterialTheme.colorScheme.primary.copy(alpha = .16f)), contentAlignment = Alignment.Center) {
-                        Icon(Icons.Default.MenuBook, null, tint = MaterialTheme.colorScheme.primary)
+                        Icon(Icons.Default.MenuBook, null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.accentTint())
                     }
                     Spacer(Modifier.width(14.dp))
                     Text("生词本", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
                     if (unknownWords.isNotEmpty()) {
                         Surface(color = MaterialTheme.colorScheme.primary.copy(alpha = .14f), shape = RoundedCornerShape(50)) {
-                            Text("${unknownWords.size}", color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold, modifier = Modifier.padding(horizontal = 10.dp, vertical = 3.dp))
+                            Text("${unknownWords.size}", color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold, modifier = Modifier.padding(horizontal = 10.dp, vertical = 3.dp).accentTint(horizontal = true))
                         }
                         Spacer(Modifier.width(4.dp))
                     }
-                    Icon(Icons.Default.ChevronRight, null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Icon(Icons.Default.ChevronRight, null, tint = chevronTint(), modifier = Modifier.accentTint())
                 }
             }
         }
@@ -3906,7 +3954,7 @@ private fun WordsScreen(
             GlassCard(color = MaterialTheme.colorScheme.surface, shape = RoundedCornerShape(20.dp), onClick = { showWordBook = true }) {
                 Row(Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 16.dp), verticalAlignment = Alignment.CenterVertically) {
                     Box(Modifier.size(42.dp).clip(RoundedCornerShape(14.dp)).background(MaterialTheme.colorScheme.primary.copy(alpha = .16f)), contentAlignment = Alignment.Center) {
-                        Icon(Icons.Default.AutoStories, null, tint = MaterialTheme.colorScheme.primary)
+                        Icon(Icons.Default.AutoStories, null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.accentTint())
                     }
                     Spacer(Modifier.width(14.dp))
                     Text("单词书", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
@@ -3914,11 +3962,11 @@ private fun WordsScreen(
                     Text(book.shortName, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, modifier = Modifier.weight(1f))
                     if (total > 0) {
                         Surface(color = MaterialTheme.colorScheme.primary.copy(alpha = .14f), shape = RoundedCornerShape(50)) {
-                            Text("%,d".format(total), color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold, modifier = Modifier.padding(horizontal = 10.dp, vertical = 3.dp))
+                            Text("%,d".format(total), color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold, modifier = Modifier.padding(horizontal = 10.dp, vertical = 3.dp).accentTint(horizontal = true))
                         }
                         Spacer(Modifier.width(4.dp))
                     }
-                    Icon(Icons.Default.ChevronRight, null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Icon(Icons.Default.ChevronRight, null, tint = chevronTint(), modifier = Modifier.accentTint())
                 }
             }
         }
@@ -4024,7 +4072,7 @@ private fun WordBookPage(
             Spacer(Modifier.width(8.dp))
             Text(title, style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, modifier = Modifier.weight(1f))
             Surface(color = MaterialTheme.colorScheme.primary.copy(alpha = .14f), shape = RoundedCornerShape(50)) {
-                Text("%,d".format(filtered.size), color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold, modifier = Modifier.padding(horizontal = 10.dp, vertical = 3.dp))
+                Text("%,d".format(filtered.size), color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold, modifier = Modifier.padding(horizontal = 10.dp, vertical = 3.dp).accentTint(horizontal = true))
             }
         }
         Spacer(Modifier.height(8.dp))
@@ -4074,7 +4122,7 @@ private fun WordBookRow(word: PackWord, stage: Int?, onClick: () -> Unit) {
                 if (stage >= WordStudy.MASTERED_STAGE) Icons.Default.CheckCircle else Icons.Default.Check,
                 contentDescription = if (stage >= WordStudy.MASTERED_STAGE) "已掌握" else "学过",
                 tint = MaterialTheme.colorScheme.primary,
-                modifier = Modifier.size(20.dp)
+                modifier = Modifier.size(20.dp).accentTint()
             )
         }
     }
@@ -4131,16 +4179,16 @@ private fun WordDetailDialog(
                         }
                     }
                 }
-                Text("释义", fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
+                Text("释义", fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary, modifier = Modifier.accentTint(horizontal = true))
                 Text(word.meaning.replace("；", "\n").ifBlank { "（词书里没有释义）" })
                 val forms = full?.forms.orEmpty()
                 if (forms.isNotEmpty()) {
-                    Text("词形变化", fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
+                    Text("词形变化", fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary, modifier = Modifier.accentTint(horizontal = true))
                     forms.forEach { (k, v) ->
                         Row { Text(k, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.width(96.dp)); Text(v, fontWeight = FontWeight.Medium) }
                     }
                 }
-                Text("我的记录", fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
+                Text("我的记录", fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary, modifier = Modifier.accentTint(horizontal = true))
                 val p = progress
                 if (p == null) Text("还没学过", color = MaterialTheme.colorScheme.onSurfaceVariant)
                 else {
@@ -4378,7 +4426,8 @@ private fun OverviewScreen(records: List<RecordEntry>, wordCount: Int, modifier:
                                                             selected -> calAcc?.onFill ?: MaterialTheme.colorScheme.onPrimaryContainer
                                                             isToday -> MaterialTheme.colorScheme.primary
                                                             else -> MaterialTheme.colorScheme.onSurface
-                                                        }
+                                                        },
+                                                        modifier = Modifier.accentTint(isToday && !selected, horizontal = true)
                                                     )
                                                     if (dayMood != null) MoodFace(dayMood, 16.dp, Modifier.padding(vertical = 1.dp))
                                                     dayRecords.filter { labelFor(it).isNotEmpty() }.take(if (dayMood != null) 1 else 2).forEach { r ->
@@ -4543,7 +4592,7 @@ private fun DataScreen(
                         AccentSwitch(checked = aiWithMedia, onCheckedChange = { aiWithMedia = it })
                     }
                     listOf(7 to "最近 7 天", 30 to "最近 30 天", null to "全部记录").forEach { (d, label) ->
-                        OutlinedButton(onClick = { showAiExport = false; exportForAi(d, aiWithMedia) }, enabled = !aiExporting, modifier = Modifier.fillMaxWidth()) { Text(label) }
+                        OutlinedButton(onClick = { showAiExport = false; exportForAi(d, aiWithMedia) }, enabled = !aiExporting, modifier = Modifier.fillMaxWidth()) { AccentRow { Text(label) } }
                     }
                 }
             },
@@ -4714,7 +4763,7 @@ private fun DataScreen(
                         Column(Modifier.weight(1f)) {
                             Text("提醒时间", fontWeight = FontWeight.SemiBold)
                         }
-                        Text(timeText(), fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
+                        Text(timeText(), fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary, modifier = Modifier.accentTint(horizontal = true))
                         Spacer(Modifier.width(4.dp))
                         TextButton(onClick = { pickReminderTime() }) { Text("改时间") }
                     }
@@ -4762,7 +4811,7 @@ private fun DataScreen(
                             Column(Modifier.weight(1f)) {
                                 Text("允许后台运行", fontWeight = FontWeight.SemiBold)
                             }
-                            if (bgOk) Icon(Icons.Default.Check, contentDescription = "已允许", tint = MaterialTheme.colorScheme.primary, modifier = Modifier.padding(end = 12.dp).size(20.dp))
+                            if (bgOk) Icon(Icons.Default.Check, contentDescription = "已允许", tint = MaterialTheme.colorScheme.primary, modifier = Modifier.padding(end = 12.dp).size(20.dp).accentTint())
                             if (!bgOk) TextButton(onClick = { runCatching { ctx.startActivity(AutoBook.batteryOptIntent(ctx)) }.onFailure { runCatching { ctx.startActivity(AutoBook.appDetailsIntent(ctx)) } } }) { Text("去允许") }
                         }
                         HorizontalDivider()
@@ -4886,7 +4935,7 @@ private fun DataScreen(
             GlassCard(color = MaterialTheme.colorScheme.surface, shape = RoundedCornerShape(20.dp)) {
                 Row(Modifier.fillMaxWidth().padding(18.dp)) {
                     Box(Modifier.size(38.dp).clip(RoundedCornerShape(12.dp)).background(MaterialTheme.colorScheme.primary.copy(alpha = .16f)), contentAlignment = Alignment.Center) {
-                        Icon(icon, null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(20.dp))
+                        Icon(icon, null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(20.dp).accentTint())
                     }
                     Spacer(Modifier.width(14.dp))
                     Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
@@ -4920,7 +4969,7 @@ private fun DataScreen(
                 InfoTip("记录、单词、账目都只存在这台手机。照片和视频在知行里另存了一份，相册里删了也不影响；卸载或换机前，先导出备份，再把照片和视频存到相册。")
             }
             Spacer(Modifier.height(4.dp))
-            Button(onClick = { export.launch("zhixing-backup.json") }, modifier = Modifier.fillMaxWidth()) { Text("导出本地备份") }
+            Button(onClick = { export.launch("zhixing-backup.json") }, modifier = Modifier.fillMaxWidth().accentFill(ButtonDefaults.shape), colors = accentButtonColors()) { Text("导出本地备份") }
             OutlinedButton(onClick = { import.launch(arrayOf("application/zip", "application/json", "text/plain", "application/octet-stream")) }, modifier = Modifier.fillMaxWidth()) { Text("从备份恢复") }
             if (com.swenhao10.localfirst.data.AutoBackup.supported()) {
                 var autoBackupOn by remember { mutableStateOf(com.swenhao10.localfirst.data.AutoBackup.isEnabled(context)) }
@@ -4952,8 +5001,8 @@ private fun DataScreen(
                     }
                 },
                 modifier = Modifier.fillMaxWidth()
-            ) { Text("照片和视频全部存到相册") }
-            OutlinedButton(onClick = { showAiExport = true }, modifier = Modifier.fillMaxWidth()) { Text("导出给 AI，让它了解我") }
+            ) { AccentRow { Text("照片和视频全部存到相册") } }
+            OutlinedButton(onClick = { showAiExport = true }, modifier = Modifier.fillMaxWidth()) { AccentRow { Text("导出给 AI，让它了解我") } }
         }
         item {
             GlassCard(color = MaterialTheme.colorScheme.surface, shape = RoundedCornerShape(20.dp)) {
@@ -4973,8 +5022,8 @@ private fun DataScreen(
         item {
             // 关于：居中的小标识 + 版本胶囊
             Column(Modifier.fillMaxWidth().padding(top = 18.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                Box(Modifier.size(44.dp).clip(RoundedCornerShape(14.dp)).background(MaterialTheme.colorScheme.primary), contentAlignment = Alignment.Center) {
-                    Text("知", color = MaterialTheme.colorScheme.onPrimary, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleLarge)
+                Box(Modifier.size(44.dp).clip(RoundedCornerShape(14.dp)).accentBackground(MaterialTheme.colorScheme.primary), contentAlignment = Alignment.Center) {
+                    Text("知", color = LocalAccent.current?.onFill ?: MaterialTheme.colorScheme.onPrimary, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleLarge)
                 }
                 Text("知行", fontWeight = FontWeight.Bold)
                 Surface(color = MaterialTheme.colorScheme.onSurface.copy(alpha = .08f), shape = RoundedCornerShape(50)) {
@@ -5160,14 +5209,14 @@ private fun MineRow(icon: ImageVector, title: String, sub: String = "", onClick:
         verticalAlignment = Alignment.CenterVertically
     ) {
         Box(Modifier.size(38.dp).clip(RoundedCornerShape(12.dp)).background(MaterialTheme.colorScheme.primary.copy(alpha = .16f)), contentAlignment = Alignment.Center) {
-            Icon(icon, null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(20.dp))
+            Icon(icon, null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(20.dp).accentTint())
         }
         Spacer(Modifier.width(14.dp))
         Column(Modifier.weight(1f)) {
             Text(title, fontWeight = FontWeight.SemiBold)
             if (sub.isNotEmpty()) Text(sub, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
-        Icon(Icons.Default.ChevronRight, null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
+        Icon(Icons.Default.ChevronRight, null, tint = chevronTint(), modifier = Modifier.accentTint())
     }
 }
 
@@ -5517,7 +5566,7 @@ private fun BoardButton(label: String, icon: ImageVector, enabled: Boolean = tru
             .graphicsLayer { alpha = if (enabled) 1f else .4f },
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Icon(icon, contentDescription = null, modifier = Modifier.size(18.dp), tint = MaterialTheme.colorScheme.primary)
+        Icon(icon, contentDescription = null, modifier = Modifier.size(18.dp).accentTint(), tint = MaterialTheme.colorScheme.primary)
         Spacer(Modifier.width(6.dp))
         Text(label, style = MaterialTheme.typography.labelLarge)
     }
@@ -5655,7 +5704,7 @@ private fun StickerBoardEditor(db: AppDatabase, onMessage: (String) -> Unit, mod
                             .background(Color.White)
                             .padding(5.dp)
                             .clip(CircleShape)
-                            .background(MaterialTheme.colorScheme.primary)
+                            .accentBackground(MaterialTheme.colorScheme.primary)
                             .pointerInput(sel.id, wPx, hPx) {
                                 awaitEachGesture {
                                     val down = awaitFirstDown(); down.consume()
@@ -5782,7 +5831,7 @@ private fun StickerBoardEditor(db: AppDatabase, onMessage: (String) -> Unit, mod
             title = { Text(if (editing.id == 0L) "写一张小便签" else "改便签") },
             dismissButton = { TextButton(onClick = { noteEdit = null }) { Text("取消") } },
             confirmButton = {
-                Button(enabled = text.isNotBlank(), onClick = {
+                Button(enabled = text.isNotBlank(), colors = accentButtonColors(), modifier = if (text.isNotBlank()) Modifier.accentFill(ButtonDefaults.shape) else Modifier, onClick = {
                     if (editing.id == 0L) {
                         add(editing.copy(id = System.currentTimeMillis(), text = text.trim(), color = color,
                             x = 0.35f + kotlin.random.Random.nextFloat() * 0.3f, y = 0.4f + kotlin.random.Random.nextFloat() * 0.3f,
@@ -5808,7 +5857,11 @@ private fun StickerBoardEditor(db: AppDatabase, onMessage: (String) -> Unit, mod
                             val ring = ringRaw.coerceIn(0f, 1f)
                             Box(
                                 Modifier.size(38.dp)
-                                    .border((2.5f * ring).dp, MaterialTheme.colorScheme.primary.copy(alpha = ring), CircleShape)
+                                    .then(LocalAccent.current.let { acc ->
+                                        if (acc == null) Modifier.border((2.5f * ring).dp, MaterialTheme.colorScheme.primary.copy(alpha = ring), CircleShape)
+                                        else if (ring > 0.01f) Modifier.border((2.5f * ring).dp, acc.brush, CircleShape)
+                                        else Modifier
+                                    })
                                     .padding((4f * ring).dp)
                                     .clip(CircleShape)
                                     .background(Color(c))
@@ -5884,7 +5937,8 @@ private fun MoodTodayCard(records: List<RecordEntry>, onPick: (Mood) -> Unit) {
                             names[i],
                             style = MaterialTheme.typography.labelMedium,
                             fontWeight = if (isToday) FontWeight.Bold else FontWeight.Normal,
-                            color = if (isToday) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+                            color = if (isToday) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.accentTint(isToday, horizontal = true)
                         )
                         Spacer(Modifier.height(6.dp))
                         Box(Modifier.size(28.dp), contentAlignment = Alignment.Center) {
@@ -6102,7 +6156,7 @@ private fun MoodManagePage(modifier: Modifier, header: @Composable () -> Unit) {
         ZhAlertDialog(
             onDismissRequest = { deleting = null },
             title = { Text("删掉「${m.name}」？") },
-            confirmButton = { TextButton(onClick = { MoodStore.deleteCustom(ctx, m.id); deleting = null }) { Text("删除", color = MaterialTheme.colorScheme.error) } },
+            confirmButton = { TextButton(onClick = { MoodStore.deleteCustom(ctx, m.id); deleting = null }, accent = false) { Text("删除", color = MaterialTheme.colorScheme.error) } },
             dismissButton = { TextButton(onClick = { deleting = null }) { Text("取消") } }
         )
     }
